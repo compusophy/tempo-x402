@@ -12,7 +12,7 @@ Crates: https://crates.io/crates/tempo-x402
 
 ```toml
 [dependencies]
-tempo-x402 = "0.9"
+tempo-x402 = "1.0.0"
 ```
 
 The crate is published as `tempo-x402` but the library name is `x402`:
