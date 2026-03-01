@@ -299,4 +299,19 @@ mod tests {
         let body: Value = test::read_body_json(resp).await;
         assert_eq!(body["x-test-header"], "test-value");
     }
+
+    #[test]
+    fn test_balance_request_deserialization() {
+        let json = r#"{"address": "0x0000000000000000000000000000000000000000", "token": "0x0000000000000000000000000000000000000001"}"#;
+        let req: BalanceRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.address, "0x0000000000000000000000000000000000000000");
+        assert_eq!(req.token.unwrap(), "0x0000000000000000000000000000000000000001");
+    }
+
+    #[test]
+    fn test_nonce_request_deserialization() {
+        let json = r#"{"address": "0x0000000000000000000000000000000000000000"}"#;
+        let req: NonceRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.address, "0x0000000000000000000000000000000000000000");
+    }
 }
