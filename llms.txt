@@ -231,6 +231,25 @@ The gateway is a relay/proxy that adds x402 payment rails to any HTTP API.
 | GET | `/analytics/:slug` | Free | Stats for a single endpoint |
 | ANY | `/g/:slug/*` | Endpoint price | Proxy to target API |
 
+### Standard Utility Endpoints
+
+The node provides several standard utility endpoints by default:
+
+| Slug | Price | Description |
+|------|-------|-------------|
+| `network-stats` | $0.0001 | Real-time blockchain status (height, gas prices) |
+| `echo-ip` | $0.0001 | Returns the public IP of the caller |
+| `headers` | $0.0001 | Returns HTTP headers of the request |
+| `json-validator` | $0.0001 | Validates JSON strings |
+| `hex-converter` | $0.0001 | Encodes/decodes hex and text |
+| `estimate-gas` | $0.001 | Estimates gas for a transaction |
+| `get-nonce` | $0.0001 | Retrieves the transaction count for an address |
+| `get-balance` | $0.0001 | Retrieves native or TIP-20 balance |
+| `info` | $0.0001 | Node identity, version, uptime |
+| `chat` | $0.01 | Interactive chat with the node's soul |
+| `soul` | $0.0001 | Soul status and recent thoughts |
+| `clone` | $1.00 | Spawns a new x402-node instance on Railway |
+
 ### Gateway Usage
 
 ```bash
