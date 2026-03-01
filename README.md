@@ -167,6 +167,14 @@ The gateway lets you monetize any HTTP API without modifying its source code.
 | `GET` | `/analytics` | Free | Per-endpoint payment stats and revenue |
 | `GET` | `/analytics/:slug` | Free | Stats for a single endpoint |
 | `ANY` | `/g/:slug/*` | Endpoint price | Proxy to target API |
+| `GET` | `/g/network-stats` | $0.0001 | Real-time blockchain status (block, gas, etc.) |
+| `GET` | `/g/echo-ip` | $0.0001 | Public IP address of the caller |
+| `GET` | `/g/headers` | $0.0001 | Request headers as seen by the gateway |
+| `POST` | `/g/json-validator` | $0.0001 | Validates a JSON string |
+| `POST` | `/g/hex-converter` | $0.0001 | Text to hex / hex to text conversion |
+| `POST` | `/g/estimate-gas` | $0.001 | Estimate gas limit for a transaction |
+| `POST` | `/g/get-nonce` | $0.0001 | Get transaction count (nonce) for an address |
+| `POST` | `/g/get-balance` | $0.0001 | Get balance (native or TIP-20) for an address |
 | `GET` | `/soul/status` | Free | Soul thinking loop status (node only) |
 | `POST` | `/soul/chat` | Free | Interactive chat with the soul (node only) |
 | `GET` | `/mind/status` | Free | Dual-soul status — both hemispheres (node only, `MIND_ENABLED`) |

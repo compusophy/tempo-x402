@@ -31,7 +31,6 @@ fn is_valid_https_url(s: &str) -> bool {
 
 /// GET /instance/info — returns identity, children, version, uptime, clone availability
 pub async fn info(state: web::Data<NodeState>) -> HttpResponse {
-    // test change
     let identity_info = state.identity.as_ref().map(|id| {
         serde_json::json!({
             "address": format!("{:#x}", id.address),

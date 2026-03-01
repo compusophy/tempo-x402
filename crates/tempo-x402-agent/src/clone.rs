@@ -67,6 +67,8 @@ impl CloneOrchestrator {
         &self,
         instance_id: &str,
         parent_address: &str,
+        parent_generation: u32,
+        parent_instance_id: Option<&str>,
     ) -> Result<CloneResult, CloneError> {
         let service_name = format!("x402-{}", &instance_id[..8]);
 
@@ -82,7 +84,7 @@ impl CloneOrchestrator {
 
         // All subsequent steps run with cleanup-on-failure
         match self
-            .spawn_clone_inner(&service_id, instance_id, parent_address)
+            .spawn_clone_inner(&service_id, instance_id, parent_address, parent_generation, parent_instance_id)
             .await
         {
             Ok(result) => Ok(result),
@@ -113,12 +115,14 @@ impl CloneOrchestrator {
         service_id: &str,
         instance_id: &str,
         parent_address: &str,
+        parent_generation: u32,
+        parent_instance_id: Option<&str>,
     ) -> Result<CloneResult, CloneError> {
         // 2. Get default environment
         let env_id = self.railway.get_default_environment().await?;
 
         // 3. Set environment variables
-        let env_vars = serde_json::json!({
+        let mut vars = serde_json::json!({
             "AUTO_BOOTSTRAP": "true",
             "INSTANCE_ID": instance_id,
             "PARENT_URL": self.config.self_url,
@@ -129,9 +133,17 @@ impl CloneOrchestrator {
             "RPC_URL": self.config.rpc_url,
             "SPA_DIR": "/app/spa",
             "PORT": "4023",
+            "SOUL_GENERATION": (parent_generation + 1).to_string(),
         });
+
+        if let Some(pid) = parent_instance_id {
+            vars.as_object_mut()
+                .unwrap()
+                .insert("SOUL_PARENT_ID".to_string(), serde_json::json!(pid));
+        }
+
         self.railway
-            .set_variables(service_id, &env_id, env_vars)
+            .set_variables(service_id, &env_id, vars)
             .await?;
         tracing::info!("Environment variables configured");
 

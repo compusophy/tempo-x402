@@ -25,7 +25,6 @@ const HEADERS_TO_STRIP: &[&str] = &[
     "x-x402-txhash",
     "x-x402-amount",
     "x-x402-network",
-    "x-x402-amount",
 ];
 
 /// Allowlist of response headers to forward from the upstream.
@@ -127,10 +126,6 @@ pub async fn proxy_request(
         request_builder = request_builder.header("X-X402-Amount", amt);
     }
     request_builder = request_builder.header("X-X402-Network", &settle.network);
-
-    if let Some(amt) = amount {
-        request_builder = request_builder.header("X-X402-Amount", amt);
-    }
 
     // Add body if present
     if !body.is_empty() {

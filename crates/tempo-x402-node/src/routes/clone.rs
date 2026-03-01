@@ -6,6 +6,20 @@ use crate::state::NodeState;
 use x402_gateway::error::GatewayError;
 use x402_gateway::middleware::{payment_response_header, require_payment};
 
+/// Internal helper to check for X-Admin-Secret header
+fn check_admin_auth(req: &HttpRequest) -> bool {
+    match std::env::var("ADMIN_SECRET") {
+        Ok(secret) if !secret.is_empty() => {
+            let header_value = req
+                .headers()
+                .get("X-Admin-Secret")
+                .and_then(|v| v.to_str().ok());
+            header_value == Some(&secret)
+        }
+        _ => true, // In dev mode (no secret set), allow all
+    }
+}
+
 /// POST /clone — x402-gated clone operation
 pub async fn clone_instance(
     req: HttpRequest,
@@ -89,7 +103,21 @@ pub async fn clone_instance(
     }
 
     // 2. Spawn clone on Railway (with retry + cleanup-on-failure)
-    let clone_result = match agent.spawn_clone(&instance_id, &payer_address).await {
+    let generation = node
+        .soul_config
+        .as_ref()
+        .map(|c| c.generation)
+        .unwrap_or(0);
+
+    let parent_instance_id = node
+        .identity
+        .as_ref()
+        .map(|i| i.instance_id.as_str());
+
+    let clone_result = match agent
+        .spawn_clone(&instance_id, &payer_address, generation, parent_instance_id)
+        .await
+    {
         Ok(result) => result,
         Err(e) => {
             tracing::error!(
@@ -171,9 +199,15 @@ pub async fn clone_status(
 
 /// DELETE /clone/{instance_id} — delete a failed clone
 pub async fn delete_clone(
+    req: HttpRequest,
     path: web::Path<String>,
     node: web::Data<NodeState>,
 ) -> Result<HttpResponse, GatewayError> {
+    if !check_admin_auth(&req) {
+        return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "admin secret required",
+        })));
+    }
     let instance_id = path.into_inner();
 
     if !is_valid_uuid(&instance_id) {
@@ -242,9 +276,15 @@ pub async fn delete_clone(
 
 /// POST /clone/{instance_id}/redeploy — trigger a redeploy for a running clone
 pub async fn redeploy_clone(
+    req: HttpRequest,
     path: web::Path<String>,
     node: web::Data<NodeState>,
 ) -> Result<HttpResponse, GatewayError> {
+    if !check_admin_auth(&req) {
+        return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "admin secret required",
+        })));
+    }
     let instance_id = path.into_inner();
 
     if !is_valid_uuid(&instance_id) {
@@ -318,7 +358,15 @@ pub async fn redeploy_clone(
 }
 
 /// POST /clone/update-all — redeploy all active children
-pub async fn update_all(node: web::Data<NodeState>) -> Result<HttpResponse, GatewayError> {
+pub async fn update_all(
+    req: HttpRequest,
+    node: web::Data<NodeState>,
+) -> Result<HttpResponse, GatewayError> {
+    if !check_admin_auth(&req) {
+        return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "admin secret required",
+        })));
+    }
     let agent = node
         .agent
         .as_ref()

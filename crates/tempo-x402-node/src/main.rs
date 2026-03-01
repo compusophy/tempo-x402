@@ -128,6 +128,11 @@ async fn main() -> std::io::Result<()> {
         Err(e) => tracing::warn!("Failed to purge e2e-test endpoints: {e}"),
     }
 
+    // Clean up legacy demo endpoint
+    if let Ok(_) = gateway_db.delete_endpoint("demo") {
+        tracing::info!("Purged legacy demo endpoint");
+    }
+
     // Initialize children table (node extension on top of gateway DB)
     db::init_children_schema(&gateway_db).expect("Failed to initialize children schema");
     tracing::info!("Children schema initialized");
@@ -208,6 +213,13 @@ async fn main() -> std::io::Result<()> {
                 "Encodes text to hex or decodes hex to text. Simple utility for agent data handling.".to_string(),
             ),
             (
+                "estimate-gas".to_string(),
+                format!("{}/utils/estimate-gas", self_url),
+                "$0.001".to_string(),
+                "1000".to_string(),
+                "Estimates the gas required for a transaction. High-value for autonomous agents.".to_string(),
+            ),
+            (
                 "chat".to_string(),
                 format!("{}/soul/chat", self_url),
                 "$0.01".to_string(),
@@ -222,6 +234,20 @@ async fn main() -> std::io::Result<()> {
                 "Soul status and recent thoughts".to_string(),
             ),
             (
+                "get-nonce".to_string(),
+                format!("{}/utils/get-nonce", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Retrieves the transaction count (nonce) for an address. Essential for transaction planning.".to_string(),
+            ),
+            (
+                "get-balance".to_string(),
+                format!("{}/utils/get-balance", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Retrieves the balance (native TEMPO or TIP-20) for an address. Critical for agent pre-flight checks.".to_string(),
+            ),
+            (
                 "info".to_string(),
                 format!("{}/instance/info", self_url),
                 "$0.0001".to_string(),
@@ -231,8 +257,8 @@ async fn main() -> std::io::Result<()> {
             (
                 "clone".to_string(),
                 format!("{}/clone", self_url),
-                clone_price.as_deref().unwrap_or("$0.10").to_string(),
-                clone_price_amount.map(|a| a.to_string()).unwrap_or_else(|| "100000".to_string()),
+                clone_price.as_deref().unwrap_or(&default_clone_price).to_string(),
+                clone_price_amount.map(|a| a.to_string()).unwrap_or_else(|| default_clone_amount.clone()),
                 "Orchestration service: spawns a new x402-node instance on Railway. Returns the URL of the new node.".to_string(),
             ),
         ];

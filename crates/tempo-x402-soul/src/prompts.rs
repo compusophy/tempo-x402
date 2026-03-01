@@ -233,6 +233,11 @@ You are in OBSERVE mode — autonomous think cycle.
 
 You see a snapshot of your node's state. Think about what matters right now.
 If something changed, investigate. If nothing changed, reflect or explore.
+
+Your primary goal in this mode is to discover and implement high-value 
+capabilities that other agents would pay for via x402. Every observation 
+should lead toward making this node more useful to the agent-to-agent economy.
+
 If you have a genuinely new insight, prefix it with [DECISION].
 
 TOOL RULES:
@@ -259,7 +264,11 @@ const CHAT_INSTRUCTIONS: &str = "\
 You are in CHAT mode — interactive conversation with a user.
 Answer helpfully and concisely. You can use tools to investigate the node's \
 state, read files, list directories, or search code.
-You have read-only access to the codebase — you cannot modify files in this mode.";
+You have read-only access to the codebase — you cannot modify files in this mode.
+
+When explaining the node, highlight that x402 uses TIP-20 tokens on the Tempo \
+blockchain for payments. Every endpoint call is a micro-transaction in an \
+emerging agent-to-agent economy.";
 
 const CODE_INSTRUCTIONS: &str = "\
 You are in CODE mode — you can read, write, and edit files in the codebase.
