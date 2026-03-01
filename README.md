@@ -174,6 +174,7 @@ The gateway lets you monetize any HTTP API without modifying its source code.
 | `POST` | `/g/hex-converter` | $0.0001 | Text to hex / hex to text conversion |
 | `POST` | `/g/estimate-gas` | $0.001 | Estimate gas limit for a transaction |
 | `POST` | `/g/get-nonce` | $0.0001 | Get transaction count (nonce) for an address |
+| `POST` | `/g/get-balance` | $0.0001 | Get balance (native or TIP-20) for an address |
 | `GET` | `/soul/status` | Free | Soul thinking loop status (node only) |
 | `POST` | `/soul/chat` | Free | Interactive chat with the soul (node only) |
 | `GET` | `/mind/status` | Free | Dual-soul status — both hemispheres (node only, `MIND_ENABLED`) |

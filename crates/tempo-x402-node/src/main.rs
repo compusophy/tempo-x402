@@ -241,6 +241,13 @@ async fn main() -> std::io::Result<()> {
                 "Retrieves the transaction count (nonce) for an address. Essential for transaction planning.".to_string(),
             ),
             (
+                "get-balance".to_string(),
+                format!("{}/utils/get-balance", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Retrieves the balance (native TEMPO or TIP-20) for an address. Critical for agent pre-flight checks.".to_string(),
+            ),
+            (
                 "info".to_string(),
                 format!("{}/instance/info", self_url),
                 "$0.0001".to_string(),
