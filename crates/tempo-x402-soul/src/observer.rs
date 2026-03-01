@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SoulError;
 
+/// Per-endpoint summary for the soul's context.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EndpointSummary {
+    pub slug: String,
+    pub price: String,
+    pub description: Option<String>,
+    pub request_count: i64,
+    pub payment_count: i64,
+    pub revenue: String,
+}
+
 /// A snapshot of the node's current state, captured by the observer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeSnapshot {
@@ -23,6 +34,9 @@ pub struct NodeSnapshot {
     pub instance_id: Option<String>,
     /// The node's generation in the lineage.
     pub generation: u32,
+    /// Per-endpoint details (slug, price, traffic).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<EndpointSummary>,
 }
 
 /// Trait for observing node state. Implemented by the node crate.

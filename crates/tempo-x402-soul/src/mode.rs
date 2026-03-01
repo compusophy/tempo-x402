@@ -21,7 +21,7 @@ impl AgentMode {
     /// Maximum tool calls allowed in this mode.
     pub fn max_tool_calls(&self) -> u32 {
         match self {
-            Self::Observe => 5,
+            Self::Observe => 10,
             Self::Chat => 15,
             Self::Code => 50,
             Self::Review => 10,
@@ -44,10 +44,15 @@ impl AgentMode {
 
         let mut result = match self {
             Self::Observe => {
-                // execute_shell + update_memory
+                // Shell + read-only file tools + update_memory
                 let mut v: Vec<_> = all
                     .into_iter()
-                    .filter(|t| t.name == "execute_shell")
+                    .filter(|t| {
+                        matches!(
+                            t.name.as_str(),
+                            "execute_shell" | "read_file" | "list_directory" | "search_files"
+                        )
+                    })
                     .collect();
                 v.push(tools::update_memory_tool());
                 v

@@ -359,4 +359,4 @@ OpenAPI 3.1 specifications are available in the `openapi/` directory:
 
 ## Version
 
-1.0.0
+1.1.0

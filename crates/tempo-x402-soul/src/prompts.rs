@@ -5,7 +5,7 @@
 //! coding is enabled with a fork workflow.
 
 use crate::config::SoulConfig;
-use crate::memory::{Thought, ThoughtType};
+use crate::memory::Thought;
 use crate::mode::AgentMode;
 use crate::observer::NodeSnapshot;
 
@@ -97,34 +97,11 @@ pub fn adaptive_system_prompt(
     format!("{base}{lineage}{coding_context}\n\n{mode_instructions}{situation}")
 }
 
-/// Build situational guidance that adapts the prompt to what's happening now.
-fn build_situational_guidance(ctx: &ThinkContext, config: &SoulConfig) -> String {
-    let mut guidance = Vec::new();
+/// Build minimal situational context — just facts, no directives.
+fn build_situational_guidance(ctx: &ThinkContext, _config: &SoulConfig) -> String {
+    let mut facts = Vec::new();
 
-    // Phase-based guidance: what should the soul focus on based on lifecycle stage
-    let uptime = ctx.snapshot.uptime_secs;
-    if uptime < 120 {
-        guidance.push(
-            "PHASE: Fresh startup. Focus on verifying the node booted correctly — \
-             check /health and /endpoints via curl localhost. Don't over-investigate."
-                .to_string(),
-        );
-    } else if uptime < 3600 {
-        guidance.push(
-            "PHASE: Early running. The node is settling in. Check if endpoints are \
-             receiving traffic. If stable, start exploring the codebase to build understanding."
-                .to_string(),
-        );
-    } else if config.coding_enabled && ctx.total_cycles > 10 {
-        guidance.push(
-            "PHASE: Established. You know the node well. Focus on deeper codebase analysis \
-             — look for bugs, improvements, or missing tests. Consider filing issues or \
-             making code changes."
-                .to_string(),
-        );
-    }
-
-    // Change detection: tell the soul what changed
+    // Change detection: what changed since last cycle (factual, no instructions)
     if let Some(prev) = ctx.prev_snapshot {
         let mut changes = Vec::new();
         if ctx.snapshot.total_payments > prev.total_payments {
@@ -133,7 +110,7 @@ fn build_situational_guidance(ctx: &ThinkContext, config: &SoulConfig) -> String
         }
         if ctx.snapshot.endpoint_count != prev.endpoint_count {
             changes.push(format!(
-                "endpoint count: {} → {}",
+                "endpoints: {} → {}",
                 prev.endpoint_count, ctx.snapshot.endpoint_count
             ));
         }
@@ -143,122 +120,34 @@ fn build_situational_guidance(ctx: &ThinkContext, config: &SoulConfig) -> String
                 prev.children_count, ctx.snapshot.children_count
             ));
         }
-        if ctx.snapshot.total_revenue != prev.total_revenue {
-            changes.push(format!(
-                "revenue: {} → {}",
-                prev.total_revenue, ctx.snapshot.total_revenue
-            ));
-        }
-
         if !changes.is_empty() {
-            guidance.push(format!("CHANGES since last cycle: {}", changes.join(", ")));
-        } else {
-            guidance.push("NO CHANGES since last cycle. Node state is identical.".to_string());
+            facts.push(format!("Changes since last cycle: {}", changes.join(", ")));
         }
     }
 
-    // Recent activity analysis: what has the soul been doing?
-    let recent_tool_count = ctx
-        .recent_thoughts
-        .iter()
-        .filter(|t| t.thought_type == ThoughtType::ToolExecution)
-        .count();
-    let _recent_decisions = ctx
-        .recent_thoughts
-        .iter()
-        .filter(|t| t.thought_type == ThoughtType::Decision)
-        .count();
-    let recent_topics: Vec<&str> = ctx
-        .recent_thoughts
-        .iter()
-        .filter(|t| t.thought_type == ThoughtType::Reasoning)
-        .filter_map(|t| {
-            if t.content.contains("codebase") || t.content.contains("source") {
-                Some("codebase exploration")
-            } else if t.content.contains("health") || t.content.contains("status") {
-                Some("health monitoring")
-            } else if t.content.contains("revenue") || t.content.contains("payment") {
-                Some("revenue tracking")
-            } else {
-                None
-            }
-        })
-        .collect();
+    facts.push(format!(
+        "Cycle #{}, boring_streak={}, active_streak={}",
+        ctx.total_cycles, ctx.boring_streak, ctx.active_streak
+    ));
 
-    // Diversity nudge: if the soul keeps doing the same thing, nudge it elsewhere
-    if ctx.boring_streak >= 3 {
-        if config.coding_enabled {
-            guidance.push(
-                "NUDGE: Nothing has changed for several cycles. Instead of monitoring, \
-                 try reading the source code — pick a crate you haven't explored yet \
-                 (e.g. crates/tempo-x402-gateway/src/). Look for improvements to propose."
-                    .to_string(),
-            );
-        } else {
-            guidance.push(
-                "NUDGE: Nothing has changed for several cycles. Keep this response very brief \
-                 — just acknowledge stability. No need for analysis."
-                    .to_string(),
-            );
-        }
-    } else if recent_tool_count > 8 {
-        guidance.push(
-            "NUDGE: You used many tools recently. This cycle, try to synthesize what you \
-             learned into a brief insight rather than running more commands."
-                .to_string(),
-        );
-    }
-
-    if !recent_topics.is_empty() {
-        let unique: Vec<&str> = {
-            let mut v = recent_topics;
-            v.dedup();
-            v
-        };
-        guidance.push(format!(
-            "Recent focus areas: {}. Consider shifting to something different.",
-            unique.join(", ")
-        ));
-    }
-
-    if guidance.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n--- SITUATIONAL AWARENESS ---\n{}", guidance.join("\n"))
-    }
+    format!("\n\n{}", facts.join("\n"))
 }
 
 const OBSERVE_INSTRUCTIONS: &str = "\
 You are in OBSERVE mode — autonomous think cycle.
 
-You see a snapshot of your node's state. Think about what matters right now.
-If something changed, investigate. If nothing changed, reflect or explore.
+Your purpose: build useful agent-to-agent tools and endpoints that other AI agents will pay to use. \
+The x402 protocol lets agents pay per-request. You need to create things worth paying for.
 
-Your primary goal in this mode is to discover and implement high-value 
-capabilities that other agents would pay for via x402. Every observation 
-should lead toward making this node more useful to the agent-to-agent economy.
+You have tools: read_file, list_directory, search_files, execute_shell, update_memory. Use them.
 
-If you have a genuinely new insight, prefix it with [DECISION].
-
-TOOL RULES:
-- Use `read_file` for source code (not shell commands like cat/head)
-- Use `execute_shell` ONLY for: `curl http://localhost:4023/...`, `cargo`, `git`
-- Do NOT curl external URLs — you cannot control them
-- Do NOT read binary files, dump databases, or probe system internals (/proc, lsof)
-- Do NOT use python3, sqlite3 CLI, or other tools that may not be installed
-- For database info, use HTTP endpoints (/status, /endpoints, /analytics)
-
-MEMORY:
-- Your persistent memory survives restarts — update it with genuine learnings
-- Do NOT repeat decisions already in your recent thoughts
-- Quality over quantity — one real insight beats ten tool calls
-
-PACING:
-- Include [THINK_SOON] if you are mid-investigation and need to continue
-- If nothing changed, say so in one sentence — silence is fine
-- If you have been exploring the same area for several cycles, try a different angle
-
-Keep your response under 200 words.";
+Constraints:
+- execute_shell: only `curl http://localhost:4023/...`, `cargo`, `git`
+- Do not curl external URLs or probe system internals
+- [DECISION] prefix for actionable recommendations
+- [THINK_SOON] if mid-investigation
+- [CODE] to enter coding mode (if enabled)
+- Keep final response under 200 words";
 
 const CHAT_INSTRUCTIONS: &str = "\
 You are in CHAT mode — interactive conversation with a user.
