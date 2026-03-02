@@ -174,6 +174,15 @@ pub struct AbiEncodeRequest {
     pub args: Vec<Value>,
 }
 
+#[derive(Deserialize)]
+pub struct TxBuilderRequest {
+    pub from: String,
+    pub to: String,
+    pub signature: String,
+    pub args: Vec<Value>,
+    pub value: Option<String>,
+}
+
 #[post("/get-balance")]
 pub async fn get_balance(
     state: web::Data<NodeState>,
@@ -495,6 +504,114 @@ pub async fn abi_encode(body: web::Json<AbiEncodeRequest>) -> impl Responder {
     }
 }
 
+#[post("/tx-builder")]
+pub async fn tx_builder(
+    state: web::Data<NodeState>,
+    body: web::Json<TxBuilderRequest>,
+) -> impl Responder {
+    let facilitator = match state.gateway.facilitator.as_ref() {
+        Some(f) => f,
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({ "error": "Facilitator not enabled" }))
+        }
+    };
+
+    let provider = facilitator.facilitator.provider();
+
+    // 1. ABI Encode
+    use alloy::dyn_abi::Specifier;
+    let func = match alloy::dyn_abi::Function::parse(&body.signature) {
+        Ok(f) => f,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid signature: {}", e) })),
+    };
+
+    if body.args.len() != func.inputs.len() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ 
+            "error": format!("Argument count mismatch: expected {}, got {}", func.inputs.len(), body.args.len()) 
+        }));
+    }
+
+    let mut sol_args = Vec::new();
+    for (i, (arg, input)) in body.args.iter().zip(func.inputs.iter()).enumerate() {
+        match input.ty.coerce_json(arg) {
+            Ok(val) => sol_args.push(val),
+            Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ 
+                "error": format!("Failed to parse argument {}: {}", i, e) 
+            })),
+        }
+    }
+
+    let data = match func.abi_encode_input(&sol_args) {
+        Ok(encoded) => encoded,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Encoding failed: {}", e) })),
+    };
+
+    // 2. Parse addresses and value
+    let from = match Address::from_str(&body.from) {
+        Ok(a) => a,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid 'from' address: {}", e) })),
+    };
+    let to = match Address::from_str(&body.to) {
+        Ok(a) => a,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid 'to' address: {}", e) })),
+    };
+    let value = if let Some(v_str) = &body.value {
+        match alloy::primitives::U256::from_str(v_str) {
+            Ok(v) => Some(v),
+            Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid value: {}", e) })),
+        }
+    } else {
+        None
+    };
+
+    // 3. Get Nonce, Gas Price, and Chain Id
+    let (nonce_res, gas_price_res, chain_id_res) = tokio::join!(
+        provider.get_transaction_count(from),
+        provider.get_gas_price(),
+        provider.get_chain_id(),
+    );
+
+    let nonce = match nonce_res {
+        Ok(n) => n,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({ "error": format!("Failed to get nonce: {}", e) })),
+    };
+
+    let gas_price = match gas_price_res {
+        Ok(gp) => gp,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({ "error": format!("Failed to get gas price: {}", e) })),
+    };
+
+    let chain_id = match chain_id_res {
+        Ok(c) => Some(c),
+        Err(_) => None,
+    };
+
+    let tx_req = alloy::rpc::types::TransactionRequest::default()
+        .from(from)
+        .to(Some(to))
+        .input(alloy::rpc::types::TransactionInput::new(data.clone().into()))
+        .value(value)
+        .nonce(nonce)
+        .gas_price(gas_price);
+
+    let gas_limit = match provider.estimate_gas(tx_req).await {
+        Ok(g) => g,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Gas estimation failed: {}", e) })),
+    };
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "from": from,
+        "to": to,
+        "data": alloy::hex::encode(data),
+        "value": value.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()),
+        "nonce": nonce,
+        "gas_price": gas_price.to_string(),
+        "gas_limit": gas_limit.to_string(),
+        "chain_id": chain_id.map(|c| c.to_string()),
+    }))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/utils")
@@ -513,6 +630,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(eth_call)
             .service(get_block)
             .service(abi_encode)
+            .service(tx_builder)
     );
 }
 

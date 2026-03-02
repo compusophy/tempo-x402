@@ -297,6 +297,13 @@ async fn main() -> std::io::Result<()> {
                 "Retrieves block details by number or hash. Returns the block header and transaction data.".to_string(),
             ),
             (
+                "tx-builder".to_string(),
+                format!("{}/utils/tx-builder", self_url),
+                "$0.005".to_string(),
+                "5000".to_string(),
+                "Orchestrates ABI encoding, nonce retrieval, and gas estimation into a single call. Returns a complete transaction object ready for signing.".to_string(),
+            ),
+            (
                 "info".to_string(),
                 format!("{}/instance/info", self_url),
                 "$0.0001".to_string(),
