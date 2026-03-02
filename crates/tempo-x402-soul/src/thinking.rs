@@ -93,12 +93,12 @@ impl AdaptivePacer {
             // Minor change → slightly sooner
             self.base_secs / 2
         } else if self.boring_streak >= 5 {
-            // Very boring → exponential backoff (capped at MAX)
-            let backoff = self.base_secs * (1 + self.boring_streak as u64 / 5);
-            backoff.min(MAX_INTERVAL_SECS)
+            // Long boring streak → settle to a moderate rhythm, don't exponentially backoff
+            // The soul should still think regularly — it has tools to explore
+            self.base_secs + 300 // base + 5min, capped by MAX below
         } else if self.boring_streak >= 2 {
-            // Mildly boring → slow down a bit
-            self.base_secs + (self.boring_streak as u64 * 60)
+            // Mildly boring → normal pace, the prompt will nudge exploration
+            self.base_secs
         } else {
             // Normal → use base interval
             self.base_secs
@@ -328,17 +328,15 @@ impl ThinkingLoop {
     ) -> Result<CycleResult, SoulError> {
         let snapshot_json = serde_json::to_string(snapshot)?;
 
-        // Record observation
+        // Record observation — full snapshot JSON goes in context, content stays brief
         let obs_thought = Thought {
             id: uuid::Uuid::new_v4().to_string(),
             thought_type: ThoughtType::Observation,
             content: format!(
-                "Uptime: {}s, Endpoints: {}, Revenue: {}, Payments: {}, Children: {}",
-                snapshot.uptime_secs,
+                "Node state captured (uptime {}h, {} endpoints, {} payments)",
+                snapshot.uptime_secs / 3600,
                 snapshot.endpoint_count,
-                snapshot.total_revenue,
                 snapshot.total_payments,
-                snapshot.children_count,
             ),
             context: Some(snapshot_json.clone()),
             created_at: chrono::Utc::now().timestamp(),
@@ -414,22 +412,10 @@ impl ThinkingLoop {
         };
 
         let user_prompt = format!(
-            "{}Current node state:\n{}\n\nRecent thoughts:\n{}\n\n\
-             Analyze the node's current state briefly. Note any concerns or opportunities. \
-             If you want to inspect something, use your available tools. \
-             If you have a new recommendation (not already in recent thoughts), prefix it with [DECISION]. \
-             Do NOT repeat previous decisions. Keep your response under 200 words.\n\n\
-             If you need to think again soon (e.g. you started investigating something), include [THINK_SOON] in your response.\n\
-             If nothing has changed and the node is stable, just say so briefly — no need to force novel insights.\n\
-             You can use `update_memory` to save important learnings to your persistent memory.{}",
+            "{}Node state:\n{}\n\nRecent thoughts:\n{}",
             memory_section,
             snapshot_json,
             recent_summary.join("\n"),
-            if self.config.autonomous_coding {
-                "\n\nIf you see an opportunity to improve the codebase, prefix with [CODE] to enter coding mode."
-            } else {
-                ""
-            }
         );
 
         // Build adaptive system prompt with situational context

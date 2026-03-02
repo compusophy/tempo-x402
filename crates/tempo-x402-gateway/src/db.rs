@@ -707,48 +707,6 @@ impl Database {
         Ok(())
     }
 
-    /// Count active endpoints.
-    pub fn get_total_endpoint_count(&self) -> Result<u32, GatewayError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| GatewayError::Internal("database lock poisoned".to_string()))?;
-
-        let count: u32 = conn.query_row(
-            "SELECT COUNT(*) FROM endpoints WHERE active = 1",
-            [],
-            |row| row.get(0),
-        )?;
-
-        Ok(count)
-    }
-
-    /// Total (revenue, payment_count) across all endpoints.
-    pub fn get_total_stats(&self) -> Result<(u128, u64), GatewayError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| GatewayError::Internal("database lock poisoned".to_string()))?;
-
-        let mut stmt = conn.prepare("SELECT revenue_total, payment_count FROM endpoint_stats")?;
-
-        let mut total_revenue: u128 = 0;
-        let mut total_payments: u64 = 0;
-
-        let rows = stmt.query_map([], |row| {
-            let rev: String = row.get(0)?;
-            let count: i64 = row.get(1)?;
-            Ok((rev, count))
-        })?;
-
-        for row in rows {
-            let (rev, count) = row?;
-            total_revenue += rev.parse::<u128>().unwrap_or(0);
-            total_payments += count as u64;
-        }
-
-        Ok((total_revenue, total_payments))
-    }
 }
 
 #[cfg(test)]
