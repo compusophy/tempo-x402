@@ -143,6 +143,18 @@ pub struct BalanceRequest {
     pub token: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct VerifySignatureRequest {
+    pub address: String,
+    pub message: String,
+    pub signature: String,
+}
+
+#[derive(Deserialize)]
+pub struct TransactionRequest {
+    pub hash: String,
+}
+
 #[post("/get-balance")]
 pub async fn get_balance(
     state: web::Data<NodeState>,
@@ -205,6 +217,81 @@ pub async fn get_balance(
     }
 }
 
+#[post("/verify-signature")]
+pub async fn verify_signature(body: web::Json<VerifySignatureRequest>) -> impl Responder {
+    let address = match Address::from_str(&body.address) {
+        Ok(a) => a,
+        Err(e) => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("Invalid address: {}", e) }))
+        }
+    };
+
+    let sig_bytes = match alloy::hex::decode(&body.signature) {
+        Ok(b) => b,
+        Err(e) => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("Invalid signature hex: {}", e) }))
+        }
+    };
+
+    let signature = match alloy::primitives::Signature::try_from(sig_bytes.as_slice()) {
+        Ok(s) => s,
+        Err(e) => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("Invalid signature format: {}", e) }))
+        }
+    };
+
+    // Try verifying as a personal_sign message first (prefixed with "\x19Ethereum Signed Message:\n")
+    let message_bytes = if let Ok(bytes) = alloy::hex::decode(body.message.trim()) {
+        bytes
+    } else {
+        body.message.as_bytes().to_vec()
+    };
+
+    match signature.recover_address_from_msg(&message_bytes) {
+        Ok(recovered) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "recovered": recovered.to_string(),
+                "matches": recovered == address
+            }))
+        }
+        Err(e) => {
+            HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Recovery failed: {}", e) }))
+        }
+    }
+}
+
+#[post("/get-transaction")]
+pub async fn get_transaction(
+    state: web::Data<NodeState>,
+    body: web::Json<TransactionRequest>,
+) -> impl Responder {
+    let facilitator = match state.gateway.facilitator.as_ref() {
+        Some(f) => f,
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({ "error": "Facilitator not enabled" }))
+        }
+    };
+
+    let provider = facilitator.facilitator.provider();
+
+    let hash = match alloy::primitives::TxHash::from_str(&body.hash) {
+        Ok(h) => h,
+        Err(e) => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("Invalid transaction hash: {}", e) }))
+        }
+    };
+
+    match provider.get_transaction_by_hash(hash).await {
+        Ok(tx) => HttpResponse::Ok().json(serde_json::json!({ "transaction": tx })),
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 #[post("/keccak256")]
 pub async fn keccak256(body: String) -> impl Responder {
     let input = if let Ok(bytes) = alloy::hex::decode(body.trim()) {
@@ -231,6 +318,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(get_nonce)
             .service(get_balance)
             .service(keccak256)
+            .service(verify_signature)
+            .service(get_transaction)
     );
 }
 

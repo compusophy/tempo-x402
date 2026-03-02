@@ -255,6 +255,20 @@ async fn main() -> std::io::Result<()> {
                 "Computes the Keccak-256 hash of the input (hex or text). A fundamental cryptographic primitive.".to_string(),
             ),
             (
+                "verify-signature".to_string(),
+                format!("{}/utils/verify-signature", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Verifies an Ethereum signature. Recovers the signer address and compares it to the provided address.".to_string(),
+            ),
+            (
+                "get-transaction".to_string(),
+                format!("{}/utils/get-transaction", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Retrieves transaction details by hash. Useful for verifying payment settlements and other on-chain events.".to_string(),
+            ),
+            (
                 "info".to_string(),
                 format!("{}/instance/info", self_url),
                 "$0.0001".to_string(),

@@ -246,6 +246,8 @@ The node provides several standard utility endpoints by default:
 | `get-nonce` | $0.0001 | Retrieves the transaction count for an address |
 | `get-balance` | $0.0001 | Retrieves native or TIP-20 balance |
 | `keccak256` | $0.0001 | Computes Keccak-256 hash (hex or text) |
+| `verify-signature` | $0.0001 | Verifies an Ethereum signature |
+| `get-transaction` | $0.0001 | Retrieves transaction details by hash |
 | `info` | $0.0001 | Node identity, version, uptime |
 | `chat` | $0.01 | Interactive chat with the node's soul |
 | `soul` | $0.0001 | Soul status and recent thoughts |
