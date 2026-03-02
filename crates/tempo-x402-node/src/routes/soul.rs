@@ -1,4 +1,5 @@
 //! Soul endpoints — status and interactive chat.
+// This is a test comment
 
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
@@ -249,6 +250,7 @@ async fn mind_chat(state: web::Data<NodeState>, body: web::Json<ChatRequest>) ->
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.route("/soul/status", web::get().to(soul_status))
         .route("/soul/chat", web::post().to(soul_chat))
+        .route("/soul/test", web::get().to(|| async { HttpResponse::Ok().body("test") }))
         .route("/mind/status", web::get().to(mind_status))
         .route("/mind/chat", web::post().to(mind_chat));
 }
