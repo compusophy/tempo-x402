@@ -156,6 +156,13 @@ pub struct TransactionRequest {
 }
 
 #[derive(Deserialize)]
+pub struct AllowanceRequest {
+    pub owner: String,
+    pub spender: String,
+    pub token: String,
+}
+
+#[derive(Deserialize)]
 pub struct EthCallRequest {
     pub to: String,
     pub data: String,
@@ -298,6 +305,59 @@ pub async fn get_transaction(
     }
 }
 
+#[post("/get-allowance")]
+pub async fn get_allowance(
+    state: web::Data<NodeState>,
+    body: web::Json<AllowanceRequest>,
+) -> impl Responder {
+    let facilitator = match state.gateway.facilitator.as_ref() {
+        Some(f) => f,
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({ "error": "Facilitator not enabled" }))
+        }
+    };
+
+    let provider = facilitator.facilitator.provider();
+
+    let owner = match Address::from_str(&body.owner) {
+        Ok(a) => a,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid owner address: {}", e) })),
+    };
+    let spender = match Address::from_str(&body.spender) {
+        Ok(a) => a,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid spender address: {}", e) })),
+    };
+    let token = match Address::from_str(&body.token) {
+        Ok(a) => a,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid token address: {}", e) })),
+    };
+
+    // allowance(owner, spender) selector: 0xdd62ed3e
+    let mut data = Vec::with_capacity(68);
+    data.extend_from_slice(&[0xdd, 0x62, 0xed, 0x3e]);
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(owner.as_slice());
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(spender.as_slice());
+
+    let tx = alloy::rpc::types::TransactionRequest::default()
+        .to(Some(token))
+        .input(alloy::rpc::types::TransactionInput::new(data.into()));
+
+    match provider.call(tx).await {
+        Ok(bytes) => {
+            if bytes.len() >= 32 {
+                let allowance = alloy::primitives::U256::from_be_slice(&bytes[0..32]);
+                HttpResponse::Ok().json(serde_json::json!({ "allowance": allowance.to_string(), "token": body.token, "owner": body.owner, "spender": body.spender }))
+            } else {
+                HttpResponse::InternalServerError().json(serde_json::json!({ "error": "Invalid response from token contract" }))
+            }
+        }
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct BlockRequest {
     pub number: Option<u64>,
@@ -410,6 +470,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(keccak256)
             .service(verify_signature)
             .service(get_transaction)
+            .service(get_allowance)
             .service(eth_call)
             .service(get_block)
     );

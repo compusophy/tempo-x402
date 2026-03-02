@@ -248,6 +248,7 @@ The node provides several standard utility endpoints by default:
 | `keccak256` | $0.0001 | Computes Keccak-256 hash (hex or text) |
 | `verify-signature` | $0.0001 | Verifies an Ethereum signature |
 | `get-transaction` | $0.0001 | Retrieves transaction details by hash |
+| `get-allowance` | $0.0001 | Retrieves token allowance for a spender |
 | `eth-call` | $0.0001 | Executes a read-only smart contract call |
 | `get-block` | $0.0001 | Retrieves block details by number or hash |
 | `info` | $0.0001 | Node identity, version, uptime |

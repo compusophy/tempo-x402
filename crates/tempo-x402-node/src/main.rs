@@ -269,6 +269,13 @@ async fn main() -> std::io::Result<()> {
                 "Retrieves transaction details by hash. Useful for verifying payment settlements and other on-chain events.".to_string(),
             ),
             (
+                "get-allowance".to_string(),
+                format!("{}/utils/get-allowance", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Retrieves the allowance for a spender on a token. Required before initiating token transfers.".to_string(),
+            ),
+            (
                 "eth-call".to_string(),
                 format!("{}/utils/eth-call", self_url),
                 "$0.0001".to_string(),
