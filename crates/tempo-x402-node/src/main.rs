@@ -282,34 +282,6 @@ async fn main() -> std::io::Result<()> {
                 clone_price_amount.map(|a| a.to_string()).unwrap_or_else(|| default_clone_amount.clone()),
                 "Orchestration service: spawns a new x402-node instance on Railway. Returns the URL of the new node.".to_string(),
             ),
-            (
-                "echo-ip",
-                format!("{}/utils/echo-ip", self_url),
-                "$0.0001",
-                "100",
-                "Echo your public IP address",
-            ),
-            (
-                "headers",
-                format!("{}/utils/headers", self_url),
-                "$0.0001",
-                "100",
-                "Echo the headers of your request",
-            ),
-            (
-                "json-validator",
-                format!("{}/utils/json-validator", self_url),
-                "$0.0001",
-                "100",
-                "Validate a JSON payload",
-            ),
-            (
-                "hex-converter",
-                format!("{}/utils/hex-converter", self_url),
-                "$0.0001",
-                "100",
-                "Convert a string to hex",
-            ),
         ];
         for (slug, target, price, amount, desc) in &endpoints {
             match gateway_db.create_endpoint(slug, &owner, target, price, amount, Some(desc)) {
