@@ -248,6 +248,13 @@ async fn main() -> std::io::Result<()> {
                 "Retrieves the balance (native TEMPO or TIP-20) for an address. Critical for agent pre-flight checks.".to_string(),
             ),
             (
+                "keccak256".to_string(),
+                format!("{}/utils/keccak256", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Computes the Keccak-256 hash of the input (hex or text). A fundamental cryptographic primitive.".to_string(),
+            ),
+            (
                 "info".to_string(),
                 format!("{}/instance/info", self_url),
                 "$0.0001".to_string(),

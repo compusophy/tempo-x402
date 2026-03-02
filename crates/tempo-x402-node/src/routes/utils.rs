@@ -205,6 +205,20 @@ pub async fn get_balance(
     }
 }
 
+#[post("/keccak256")]
+pub async fn keccak256(body: String) -> impl Responder {
+    let input = if let Ok(bytes) = alloy::hex::decode(body.trim()) {
+        bytes
+    } else {
+        body.trim().as_bytes().to_vec()
+    };
+    let hash = alloy::primitives::keccak256(&input);
+    HttpResponse::Ok().json(serde_json::json!({
+        "input": body.trim(),
+        "hash": hash.to_string()
+    }))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/utils")
@@ -215,7 +229,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(hex_converter)
             .service(estimate_gas)
             .service(get_nonce)
-            .service(get_balance),
+            .service(get_balance)
+            .service(keccak256)
     );
 }
 
