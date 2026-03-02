@@ -155,6 +155,12 @@ pub struct TransactionRequest {
     pub hash: String,
 }
 
+#[derive(Deserialize)]
+pub struct EthCallRequest {
+    pub to: String,
+    pub data: String,
+}
+
 #[post("/get-balance")]
 pub async fn get_balance(
     state: web::Data<NodeState>,
@@ -292,6 +298,90 @@ pub async fn get_transaction(
     }
 }
 
+#[derive(Deserialize)]
+pub struct BlockRequest {
+    pub number: Option<u64>,
+    pub hash: Option<String>,
+    pub full: Option<bool>,
+}
+
+#[post("/eth-call")]
+pub async fn eth_call(
+    state: web::Data<NodeState>,
+    body: web::Json<EthCallRequest>,
+) -> impl Responder {
+    let facilitator = match state.gateway.facilitator.as_ref() {
+        Some(f) => f,
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({ "error": "Facilitator not enabled" }))
+        }
+    };
+
+    let provider = facilitator.facilitator.provider();
+
+    let to = match Address::from_str(&body.to) {
+        Ok(a) => a,
+        Err(e) => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("Invalid 'to' address: {}", e) }))
+        }
+    };
+
+    let data = match alloy::hex::decode(&body.data) {
+        Ok(d) => d,
+        Err(e) => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": format!("Invalid 'data' hex: {}", e) }))
+        }
+    };
+
+    let tx = alloy::rpc::types::TransactionRequest::default()
+        .to(Some(to))
+        .input(alloy::rpc::types::TransactionInput::new(data.into()));
+
+    match provider.call(tx).await {
+        Ok(bytes) => HttpResponse::Ok().json(serde_json::json!({ "result": alloy::hex::encode(bytes) })),
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[post("/get-block")]
+pub async fn get_block(
+    state: web::Data<NodeState>,
+    body: web::Json<BlockRequest>,
+) -> impl Responder {
+    let facilitator = match state.gateway.facilitator.as_ref() {
+        Some(f) => f,
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({ "error": "Facilitator not enabled" }))
+        }
+    };
+
+    let provider = facilitator.facilitator.provider();
+
+    if let Some(hash_str) = &body.hash {
+        let hash = match alloy::primitives::BlockHash::from_str(hash_str) {
+            Ok(h) => h,
+            Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid hash: {}", e) })),
+        };
+        match provider.get_block_by_hash(hash, body.full.unwrap_or(false).into()).await {
+            Ok(block) => HttpResponse::Ok().json(serde_json::json!({ "block": block })),
+            Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() })),
+        }
+    } else {
+        let number = match body.number {
+            Some(n) => alloy::rpc::types::BlockNumberOrTag::Number(n),
+            None => alloy::rpc::types::BlockNumberOrTag::Latest,
+        };
+        match provider.get_block_by_number(number, body.full.unwrap_or(false).into()).await {
+            Ok(block) => HttpResponse::Ok().json(serde_json::json!({ "block": block })),
+            Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+}
+
 #[post("/keccak256")]
 pub async fn keccak256(body: String) -> impl Responder {
     let input = if let Ok(bytes) = alloy::hex::decode(body.trim()) {
@@ -320,6 +410,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(keccak256)
             .service(verify_signature)
             .service(get_transaction)
+            .service(eth_call)
+            .service(get_block)
     );
 }
 
