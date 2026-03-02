@@ -12,7 +12,7 @@ Crates: https://crates.io/crates/tempo-x402
 
 ```toml
 [dependencies]
-tempo-x402 = "1.0.0"
+tempo-x402 = "1.2"
 ```
 
 The crate is published as `tempo-x402` but the library name is `x402`:
@@ -280,6 +280,25 @@ Gemini, and can take actions (file read/write/edit, shell commands, git commits)
 Modes: Observe (autonomous cycles), Chat (interactive), Code (file mutation + git),
 Review (read-only analysis). Each mode has a curated tool set.
 
+### Neuroplastic Memory
+
+The soul's memory system treats thoughts with varying importance:
+
+- **Salience scoring** — each thought gets a 0-1 score: novelty (30%), prediction
+  error (25%), reward signal (25%), recency (10%), reinforcement (10%)
+- **Tiered memory** — Sensory (~2 cycle lifespan, raw observations), Working (~90
+  cycles, reasoning/decisions), Long-Term (near-permanent, consolidations + high-
+  salience decisions). Strength decays each cycle; low-strength thoughts are pruned.
+- **Prediction error** — linear extrapolation of payments/revenue/endpoints/children.
+  When reality diverges >30%, the soul gets a "prediction error" signal in its prompt.
+- **Hebbian learning** — recalled thoughts get reinforced (+0.05 strength). Most
+  salient thoughts are recalled first (salience * strength ordering).
+- **Pattern counting** — content fingerprints (first 60 chars) track novelty. Repeated
+  observations become less salient; truly new events get maximum attention.
+
+All neuroplastic data persists in the soul's SQLite DB (`/data/soul.db` on Railway).
+Gated by `SOUL_NEUROPLASTIC` (default: true).
+
 ### Dynamic Tool Registry
 
 The soul can register custom tools at runtime (`SOUL_DYNAMIC_TOOLS_ENABLED=true`):
@@ -303,6 +322,8 @@ Dynamic tools execute via shell with args passed as `TOOL_ARGS` (JSON) and
 | `SOUL_CODING_ENABLED` | `false` | Enable write/edit/commit tools |
 | `SOUL_DYNAMIC_TOOLS_ENABLED` | `false` | Enable dynamic tool registry |
 | `SOUL_AUTONOMOUS_CODING` | `false` | Allow autonomous code changes |
+| `SOUL_NEUROPLASTIC` | `true` | Enable neuroplastic memory (salience, decay, prediction) |
+| `SOUL_PRUNE_THRESHOLD` | `0.01` | Strength below which non-long-term thoughts are pruned |
 | `INSTANCE_ID` | — | VM instance ID for branch naming |
 
 ## Node (Self-Deploying)
@@ -369,7 +390,7 @@ Health check: GET /health on any service
 | `tempo-x402-node` | Self-deploying node — gateway + identity + clone orchestration + periodic health probe |
 | `tempo-x402-identity` | Wallet generation, persistence, faucet funding |
 | `tempo-x402-agent` | Railway API client + clone orchestration |
-| `tempo-x402-soul` | Agentic thinking loop — observe/think/act cycle powered by Gemini, with coding agent and dynamic tool registry |
+| `tempo-x402-soul` | Agentic thinking loop with neuroplastic memory — salience scoring, tiered decay, prediction error learning, coding agent, dynamic tool registry |
 | `tempo-x402-mind` | Lateralized dual-soul architecture — left (analytical/code) + right (holistic/observe) + callosum integration |
 
 ## API Specs
@@ -381,4 +402,4 @@ OpenAPI 3.1 specifications are available in the `openapi/` directory:
 
 ## Version
 
-1.1.0
+1.2.0

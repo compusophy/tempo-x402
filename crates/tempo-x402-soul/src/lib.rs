@@ -17,6 +17,7 @@ pub mod guard;
 pub mod llm;
 pub mod memory;
 pub mod mode;
+pub mod neuroplastic;
 pub mod observer;
 pub mod persistent_memory;
 pub mod prompts;

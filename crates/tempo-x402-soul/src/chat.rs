@@ -52,6 +52,9 @@ pub async fn handle_chat(
         content: message.to_string(),
         context: None,
         created_at: chrono::Utc::now().timestamp(),
+        salience: None,
+        memory_tier: None,
+        strength: None,
     };
     db.insert_thought(&user_thought)?;
     thought_ids.push(user_thought_id);
@@ -198,6 +201,9 @@ pub async fn handle_chat(
             content: result.text.clone(),
             context: Some(snapshot_json),
             created_at: chrono::Utc::now().timestamp(),
+            salience: None,
+            memory_tier: None,
+            strength: None,
         };
         db.insert_thought(&response_thought)?;
         thought_ids.push(response_thought_id);
@@ -213,6 +219,9 @@ pub async fn handle_chat(
                     content: decision_text.trim().to_string(),
                     context: None,
                     created_at: chrono::Utc::now().timestamp(),
+                    salience: None,
+                    memory_tier: None,
+                    strength: None,
                 };
                 db.insert_thought(&decision)?;
                 thought_ids.push(decision_id);

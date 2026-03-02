@@ -61,6 +61,9 @@ pub fn consolidate_thoughts(
             .to_string(),
         ),
         created_at: chrono::Utc::now().timestamp(),
+        salience: None,
+        memory_tier: None,
+        strength: None,
     };
 
     db.insert_thought(&consolidation)?;
@@ -90,6 +93,9 @@ mod tests {
                 content: format!("Thought number {i}"),
                 context: None,
                 created_at: 1000 + i as i64,
+                salience: None,
+                memory_tier: None,
+                strength: None,
             };
             db.insert_thought(&thought).unwrap();
         }
@@ -114,6 +120,9 @@ mod tests {
             content: "some thought".to_string(),
             context: None,
             created_at: 1000,
+            salience: None,
+            memory_tier: None,
+            strength: None,
         };
         db.insert_thought(&thought).unwrap();
         consolidate_thoughts(&db, 10, "test").unwrap();

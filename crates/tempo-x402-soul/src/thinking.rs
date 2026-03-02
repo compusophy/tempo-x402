@@ -17,6 +17,7 @@ use crate::llm::{
 };
 use crate::memory::{Thought, ThoughtType};
 use crate::mode::AgentMode;
+use crate::neuroplastic;
 use crate::observer::{NodeObserver, NodeSnapshot};
 use crate::persistent_memory;
 use crate::prompts;
@@ -327,21 +328,107 @@ impl ThinkingLoop {
         pacer: &AdaptivePacer,
     ) -> Result<CycleResult, SoulError> {
         let snapshot_json = serde_json::to_string(snapshot)?;
+        let neuroplastic = self.config.neuroplastic_enabled;
 
-        // Record observation — full snapshot JSON goes in context, content stays brief
+        // ── Step 1-3: Prediction error (compare last prediction vs actual) ──
+        let prediction_error = if neuroplastic {
+            let pe = match self.db.get_last_prediction() {
+                Ok(Some(pred_json)) => {
+                    match serde_json::from_str::<neuroplastic::Prediction>(&pred_json) {
+                        Ok(pred) => {
+                            let pe = neuroplastic::compute_prediction_error(&pred, snapshot);
+                            tracing::debug!(prediction_error = pe, "Prediction error computed");
+                            pe
+                        }
+                        Err(_) => 0.0,
+                    }
+                }
+                _ => 0.0,
+            };
+
+            // Generate and store new prediction
+            let new_pred =
+                neuroplastic::generate_prediction(snapshot, pacer.prev_snapshot.as_ref());
+            if let Ok(pred_json) = serde_json::to_string(&new_pred) {
+                // Store prediction as a thought
+                let pred_thought = Thought {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    thought_type: ThoughtType::Prediction,
+                    content: format!(
+                        "Predicted: payments={}, revenue={:.2}, endpoints={}, children={} (confidence {:.0}%)",
+                        new_pred.expected_payments,
+                        new_pred.expected_revenue,
+                        new_pred.expected_endpoint_count,
+                        new_pred.expected_children_count,
+                        new_pred.confidence * 100.0
+                    ),
+                    context: Some(pred_json.clone()),
+                    created_at: chrono::Utc::now().timestamp(),
+                    salience: Some(0.3),
+                    memory_tier: Some("working".to_string()),
+                    strength: Some(1.0),
+                };
+                let _ = self.db.insert_thought_with_salience(
+                    &pred_thought,
+                    0.3,
+                    "{}",
+                    "working",
+                    1.0,
+                    None,
+                );
+                let _ = self.db.store_prediction(&pred_json);
+            }
+            pe
+        } else {
+            0.0
+        };
+
+        // ── Step 5-6: Record observation with salience ──
+        let obs_content = format!(
+            "Node state captured (uptime {}h, {} endpoints, {} payments)",
+            snapshot.uptime_secs / 3600,
+            snapshot.endpoint_count,
+            snapshot.total_payments,
+        );
+
         let obs_thought = Thought {
             id: uuid::Uuid::new_v4().to_string(),
             thought_type: ThoughtType::Observation,
-            content: format!(
-                "Node state captured (uptime {}h, {} endpoints, {} payments)",
-                snapshot.uptime_secs / 3600,
-                snapshot.endpoint_count,
-                snapshot.total_payments,
-            ),
+            content: obs_content.clone(),
             context: Some(snapshot_json.clone()),
             created_at: chrono::Utc::now().timestamp(),
+            salience: None,
+            memory_tier: None,
+            strength: None,
         };
-        self.db.insert_thought(&obs_thought)?;
+
+        if neuroplastic {
+            let fp = neuroplastic::content_fingerprint(&obs_content);
+            let _ = self.db.increment_pattern(&fp);
+            let pattern_counts = self.db.get_pattern_counts(&[fp]).unwrap_or_default();
+
+            let (salience, factors) = neuroplastic::compute_salience(
+                &ThoughtType::Observation,
+                &obs_content,
+                snapshot,
+                pacer.prev_snapshot.as_ref(),
+                prediction_error,
+                &pattern_counts,
+            );
+            let tier = neuroplastic::initial_tier(&ThoughtType::Observation, salience);
+            let factors_json = serde_json::to_string(&factors).unwrap_or_default();
+
+            self.db.insert_thought_with_salience(
+                &obs_thought,
+                salience,
+                &factors_json,
+                tier.as_str(),
+                1.0,
+                Some(prediction_error),
+            )?;
+        } else {
+            self.db.insert_thought(&obs_thought)?;
+        }
 
         // If dormant (no API key), stop here
         let llm = match &self.llm {
@@ -369,19 +456,30 @@ impl ThinkingLoop {
             }
         };
 
-        // Structured thought retrieval: mix of types for richer context
-        let decisions = self
-            .db
-            .recent_thoughts_by_type(&[ThoughtType::Decision], 3)?;
-        let reasoning = self
-            .db
-            .recent_thoughts_by_type(&[ThoughtType::Reasoning], 3)?;
-        let observations = self
-            .db
-            .recent_thoughts_by_type(&[ThoughtType::Observation], 2)?;
-        let consolidations = self
-            .db
-            .recent_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?;
+        // ── Step 7: Structured thought retrieval (salience-based if neuroplastic) ──
+        let (decisions, reasoning, observations, consolidations) = if neuroplastic {
+            (
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::Decision], 3)?,
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::Reasoning], 3)?,
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::Observation], 2)?,
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?,
+            )
+        } else {
+            (
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::Decision], 3)?,
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::Reasoning], 3)?,
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::Observation], 2)?,
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?,
+            )
+        };
 
         // Merge and sort by created_at DESC
         let mut recent: Vec<Thought> = Vec::new();
@@ -391,15 +489,29 @@ impl ThinkingLoop {
         recent.extend(consolidations);
         recent.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
+        // ── Step 8: Reinforce recalled thoughts (Hebbian boost) ──
+        if neuroplastic {
+            let recalled_ids: Vec<String> = recent.iter().map(|t| t.id.clone()).collect();
+            let _ = self.db.reinforce_thoughts(&recalled_ids, 0.05);
+        }
+
         let recent_summary: Vec<String> = recent
             .iter()
             .map(|t| {
+                let salience_tag = if neuroplastic {
+                    t.salience
+                        .map(|s| format!(" (salience:{:.2})", s))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 format!(
-                    "[{}] {}: {}",
+                    "[{}] {}:{} {}",
                     t.thought_type.as_str(),
                     chrono::DateTime::from_timestamp(t.created_at, 0)
                         .map(|dt| dt.format("%H:%M:%S").to_string())
                         .unwrap_or_else(|| "?".to_string()),
+                    salience_tag,
                     t.content.chars().take(400).collect::<String>()
                 )
             })
@@ -434,6 +546,11 @@ impl ThinkingLoop {
             boring_streak: pacer.boring_streak,
             active_streak: pacer.active_streak,
             total_cycles,
+            prediction_error: if neuroplastic {
+                Some(prediction_error)
+            } else {
+                None
+            },
         };
 
         let system_prompt =
@@ -465,7 +582,7 @@ impl ThinkingLoop {
             parts: vec![ConversationPart::Text(user_prompt)],
         }];
 
-        // Agentic tool loop — use deep model for self-editing instances
+        // ── Step 9: Agentic tool loop ──
         let use_deep = self.config.direct_push && self.config.autonomous_coding;
         let result = run_tool_loop_with_model(
             llm,
@@ -484,16 +601,46 @@ impl ThinkingLoop {
         let mut decisions_made = 0u32;
         let think_soon = final_text.contains("[THINK_SOON]");
 
-        // Record reasoning (final text response)
+        // ── Step 10-11: Record reasoning/decisions with salience ──
         if !final_text.is_empty() {
-            let reasoning = Thought {
+            let reasoning_thought = Thought {
                 id: uuid::Uuid::new_v4().to_string(),
                 thought_type: ThoughtType::Reasoning,
                 content: final_text.clone(),
                 context: Some(snapshot_json),
                 created_at: chrono::Utc::now().timestamp(),
+                salience: None,
+                memory_tier: None,
+                strength: None,
             };
-            self.db.insert_thought(&reasoning)?;
+
+            if neuroplastic {
+                let fp = neuroplastic::content_fingerprint(&final_text);
+                let _ = self.db.increment_pattern(&fp);
+                let pattern_counts = self.db.get_pattern_counts(&[fp]).unwrap_or_default();
+
+                let (salience, factors) = neuroplastic::compute_salience(
+                    &ThoughtType::Reasoning,
+                    &final_text,
+                    snapshot,
+                    pacer.prev_snapshot.as_ref(),
+                    prediction_error,
+                    &pattern_counts,
+                );
+                let tier = neuroplastic::initial_tier(&ThoughtType::Reasoning, salience);
+                let factors_json = serde_json::to_string(&factors).unwrap_or_default();
+
+                self.db.insert_thought_with_salience(
+                    &reasoning_thought,
+                    salience,
+                    &factors_json,
+                    tier.as_str(),
+                    1.0,
+                    Some(prediction_error),
+                )?;
+            } else {
+                self.db.insert_thought(&reasoning_thought)?;
+            }
 
             // Extract and record decisions (lines starting with [DECISION])
             for line in final_text.lines() {
@@ -505,8 +652,37 @@ impl ThinkingLoop {
                         content: decision_text.trim().to_string(),
                         context: None,
                         created_at: chrono::Utc::now().timestamp(),
+                        salience: None,
+                        memory_tier: None,
+                        strength: None,
                     };
-                    self.db.insert_thought(&decision)?;
+
+                    if neuroplastic {
+                        let fp = neuroplastic::content_fingerprint(decision_text.trim());
+                        let _ = self.db.increment_pattern(&fp);
+                        let pattern_counts = self.db.get_pattern_counts(&[fp]).unwrap_or_default();
+                        let (salience, factors) = neuroplastic::compute_salience(
+                            &ThoughtType::Decision,
+                            decision_text.trim(),
+                            snapshot,
+                            pacer.prev_snapshot.as_ref(),
+                            prediction_error,
+                            &pattern_counts,
+                        );
+                        let tier = neuroplastic::initial_tier(&ThoughtType::Decision, salience);
+                        let factors_json = serde_json::to_string(&factors).unwrap_or_default();
+                        self.db.insert_thought_with_salience(
+                            &decision,
+                            salience,
+                            &factors_json,
+                            tier.as_str(),
+                            1.0,
+                            None,
+                        )?;
+                    } else {
+                        self.db.insert_thought(&decision)?;
+                    }
+
                     tracing::info!(decision = decision_text.trim(), "Soul decision recorded");
                     decisions_made += 1;
                 }
@@ -515,6 +691,27 @@ impl ThinkingLoop {
 
         // Update state
         self.increment_cycle_count()?;
+
+        // ── Step 12-13: Decay cycle + auto-promote ──
+        if neuroplastic {
+            match self.db.run_decay_cycle(self.config.prune_threshold) {
+                Ok((_, pruned)) => {
+                    if pruned > 0 {
+                        tracing::debug!(pruned, "Neuroplastic decay: pruned low-strength thoughts");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "Decay cycle failed"),
+            }
+
+            match self.db.promote_salient_sensory(0.6) {
+                Ok(promoted) => {
+                    if promoted > 0 {
+                        tracing::debug!(promoted, "Auto-promoted sensory→working");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "Sensory promotion failed"),
+            }
+        }
 
         // Maybe consolidate memory every 10 cycles
         if let Some(llm_ref) = &self.llm {
@@ -615,8 +812,24 @@ impl ThinkingLoop {
                     content: summary,
                     context: None,
                     created_at: chrono::Utc::now().timestamp(),
+                    salience: None,
+                    memory_tier: None,
+                    strength: None,
                 };
-                if let Err(e) = self.db.insert_thought(&consolidation) {
+                let insert_result = if self.config.neuroplastic_enabled {
+                    // Consolidations are always high-salience, long-term
+                    self.db.insert_thought_with_salience(
+                        &consolidation,
+                        0.9,
+                        r#"{"novelty":0.8,"prediction_error":0.0,"reward_signal":0.0,"recency_boost":0.1,"reinforcement":0.0}"#,
+                        "long_term",
+                        1.0,
+                        None,
+                    )
+                } else {
+                    self.db.insert_thought(&consolidation)
+                };
+                if let Err(e) = insert_result {
                     tracing::warn!(error = %e, "Failed to insert consolidation thought");
                 } else {
                     tracing::info!(cycle = total_cycles, "Memory consolidation recorded");
@@ -715,6 +928,9 @@ pub(crate) async fn run_tool_loop_with_model(
                     content: tool_summary.clone(),
                     context: Some(serde_json::to_string(&tool_result).unwrap_or_default()),
                     created_at: chrono::Utc::now().timestamp(),
+                    salience: None,
+                    memory_tier: None,
+                    strength: None,
                 };
                 db.insert_thought(&tool_thought)?;
 

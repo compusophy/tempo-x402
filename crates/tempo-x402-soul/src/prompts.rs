@@ -23,6 +23,8 @@ pub struct ThinkContext<'a> {
     pub active_streak: u32,
     /// Total cycle count.
     pub total_cycles: u64,
+    /// Prediction error from last cycle (0.0 = perfect, 1.0 = total surprise).
+    pub prediction_error: Option<f64>,
 }
 
 /// Build the system prompt for a given agent mode with adaptive context.
@@ -129,6 +131,15 @@ fn build_situational_guidance(ctx: &ThinkContext, _config: &SoulConfig) -> Strin
         "Cycle #{}, boring_streak={}, active_streak={}",
         ctx.total_cycles, ctx.boring_streak, ctx.active_streak
     ));
+
+    if let Some(pe) = ctx.prediction_error {
+        if pe > 0.3 {
+            facts.push(format!(
+                "Prediction error: {:.0}% — reality diverged from expectation",
+                pe * 100.0
+            ));
+        }
+    }
 
     format!("\n\n{}", facts.join("\n"))
 }

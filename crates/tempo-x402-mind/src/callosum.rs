@@ -144,6 +144,9 @@ impl Callosum {
                     .to_string(),
                 ),
                 created_at: chrono::Utc::now().timestamp(),
+                salience: None,
+                memory_tier: None,
+                strength: None,
             };
             self.right_db.insert_thought(&cross_thought)?;
             tracing::debug!(
@@ -167,6 +170,9 @@ impl Callosum {
                     .to_string(),
                 ),
                 created_at: chrono::Utc::now().timestamp(),
+                salience: None,
+                memory_tier: None,
+                strength: None,
             };
             self.left_db.insert_thought(&cross_thought)?;
             tracing::debug!(
@@ -216,6 +222,9 @@ impl Callosum {
                             .to_string(),
                         ),
                         created_at: chrono::Utc::now().timestamp(),
+                        salience: None,
+                        memory_tier: None,
+                        strength: None,
                     };
                     self.right_db.insert_thought(&escalation)?;
                 }
@@ -250,6 +259,9 @@ impl Callosum {
                             .to_string(),
                         ),
                         created_at: chrono::Utc::now().timestamp(),
+                        salience: None,
+                        memory_tier: None,
+                        strength: None,
                     };
                     self.left_db.insert_thought(&escalation)?;
                 }

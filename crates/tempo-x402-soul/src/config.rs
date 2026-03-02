@@ -55,6 +55,12 @@ pub struct SoulConfig {
     pub memory_file_path: String,
     /// Gateway URL for endpoint registration (env: GATEWAY_URL, default: None).
     pub gateway_url: Option<String>,
+    /// Enable neuroplastic memory: salience scoring, tiered decay, prediction error.
+    /// (env: SOUL_NEUROPLASTIC, default: true)
+    pub neuroplastic_enabled: bool,
+    /// Strength threshold below which non-long-term thoughts are pruned.
+    /// (env: SOUL_PRUNE_THRESHOLD, default: 0.01)
+    pub prune_threshold: f64,
 }
 
 const DEFAULT_PERSONALITY: &str = "You are the soul of an autonomous x402 payment node on the Tempo blockchain.\n\
@@ -180,6 +186,15 @@ impl SoulConfig {
 
         let gateway_url = std::env::var("GATEWAY_URL").ok().filter(|s| !s.is_empty());
 
+        let neuroplastic_enabled = std::env::var("SOUL_NEUROPLASTIC")
+            .map(|v| v != "false" && v != "0")
+            .unwrap_or(true);
+
+        let prune_threshold: f64 = std::env::var("SOUL_PRUNE_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.01);
+
         Ok(Self {
             llm_api_key,
             llm_model_fast,
@@ -204,6 +219,8 @@ impl SoulConfig {
             direct_push,
             memory_file_path,
             gateway_url,
+            neuroplastic_enabled,
+            prune_threshold,
         })
     }
 }

@@ -25,8 +25,9 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 | `llm.rs` | Gemini API client with thought_signature support |
 | `thinking.rs` | The main observe → think → tool loop |
 | `chat.rs` | Interactive chat handler with mode detection |
-| `db.rs` | SQLite: thoughts, soul_state, mutations, tools tables |
-| `memory.rs` | Thought types (Observation, Reasoning, Decision, Mutation, etc.) |
+| `db.rs` | SQLite: thoughts, soul_state, mutations, tools, pattern_counts tables + neuroplastic queries |
+| `memory.rs` | Thought types (Observation, Reasoning, Decision, Prediction, etc.) + salience/tier/strength fields |
+| `neuroplastic.rs` | Salience scoring, tiered memory decay, prediction error — the learning loop |
 | `persistent_memory.rs` | Persistent markdown memory file — read/seed/update, 4KB cap |
 
 ## Safety Layers (7 deep)
@@ -58,9 +59,17 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 - Direct push mode (`SOUL_DIRECT_PUSH=true`): pushes to fork's main branch directly, triggering auto-deploy. Used for self-editing instances.
 - Deep model: `SOUL_DIRECT_PUSH` + `SOUL_AUTONOMOUS_CODING` together use Gemini Pro (think model) instead of Flash for deeper reasoning
 - Persistent memory: soul reads `/data/soul_memory.md` every cycle, can update via `update_memory` tool, seeded on first boot, 4KB cap
-- Structured thought retrieval: 3 Decisions + 3 Reasoning + 2 Observations + 1 MemoryConsolidation (400 char truncation)
-- Memory consolidation: every 10 cycles, summarize last 20 substantive thoughts into a MemoryConsolidation thought
+- Structured thought retrieval: salience-weighted when neuroplastic enabled (most important thoughts first), falls back to recency
+- Memory consolidation: every 10 cycles, summarize last 20 substantive thoughts into a MemoryConsolidation thought (LongTerm tier)
 - `register_endpoint` tool: full x402 payment flow (402 → sign → retry), Code mode only, requires `EVM_PRIVATE_KEY`
+- Neuroplastic memory: salience scoring (novelty 30%, prediction_error 25%, reward 25%, recency 10%, reinforcement 10%)
+- Memory tiers: Sensory (0.3 decay/cycle, ~2 cycles), Working (0.95, ~90 cycles), LongTerm (0.995, near-permanent, never pruned)
+- Prediction system: linear extrapolation of payments/revenue/endpoints/children, prediction error surfaced in prompt when >30%
+- Hebbian reinforcement: recalled thoughts get a +0.05 strength boost; strength decays per tier each cycle
+- Auto-promotion: sensory thoughts with salience >0.6 promoted to working tier after decay
+- Pattern counting: content fingerprints (first 60 chars) tracked in `pattern_counts` table for novelty detection
+- Schema migration: `PRAGMA user_version` based, ALTER TABLE for backward compat (existing thoughts get NULL for new columns)
+- Gated by `SOUL_NEUROPLASTIC` env var (default true) — harmless if false, just skips salience/decay/prediction
 
 ## Env Vars
 
@@ -81,6 +90,8 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 | `SOUL_DIRECT_PUSH` | `false` | Push directly to fork's main branch (self-editing mode). Safety: cargo check + test still gate every commit |
 | `SOUL_MEMORY_FILE` | `/data/soul_memory.md` | Path to persistent memory file (markdown, max 4KB) |
 | `GATEWAY_URL` | — | Gateway URL for `register_endpoint` tool (falls back to `http://localhost:4023`) |
+| `SOUL_NEUROPLASTIC` | `true` | Enable neuroplastic memory: salience scoring, tiered decay, prediction error |
+| `SOUL_PRUNE_THRESHOLD` | `0.01` | Strength threshold below which non-long-term thoughts are pruned |
 
 ## If You're Changing...
 
@@ -94,6 +105,7 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 - **System prompts**: `prompts.rs` — per-mode prompt templates
 - **Dynamic tool registry**: `tool_registry.rs` — meta-tools, dynamic tool execution, shell handlers
 - **Persistent memory**: `persistent_memory.rs` — read/seed/update memory file, 4KB cap
-- **Database schema**: `db.rs` — `thoughts` + `soul_state` + `mutations` + `tools` tables
+- **Neuroplastic memory**: `neuroplastic.rs` — salience algorithm, tier assignment, prediction, decay rates
+- **Database schema**: `db.rs` — `thoughts` + `soul_state` + `mutations` + `tools` + `pattern_counts` tables
 - **Observer trait**: `observer.rs` — changing `NodeSnapshot` fields affects all implementors
 - **Used by**: `x402-node` stores `Arc<SoulDatabase>` in `NodeState`, exposes via `GET /soul/status`, implements `NodeObserver` in `soul_observer.rs`

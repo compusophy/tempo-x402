@@ -77,6 +77,9 @@ mod tests {
             content: content.to_string(),
             context: None,
             created_at: 0,
+            salience: None,
+            memory_tier: None,
+            strength: None,
         }
     }
 

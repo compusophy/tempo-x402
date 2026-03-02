@@ -30,6 +30,8 @@ pub enum ThoughtType {
     Escalation,
     /// Consolidated summary of multiple thoughts (long-term memory).
     MemoryConsolidation,
+    /// A prediction about the next cycle's metrics.
+    Prediction,
 }
 
 impl ThoughtType {
@@ -47,6 +49,7 @@ impl ThoughtType {
             Self::CrossHemisphere => "cross_hemisphere",
             Self::Escalation => "escalation",
             Self::MemoryConsolidation => "memory_consolidation",
+            Self::Prediction => "prediction",
         }
     }
 
@@ -64,6 +67,7 @@ impl ThoughtType {
             "cross_hemisphere" => Some(Self::CrossHemisphere),
             "escalation" => Some(Self::Escalation),
             "memory_consolidation" => Some(Self::MemoryConsolidation),
+            "prediction" => Some(Self::Prediction),
             _ => None,
         }
     }
@@ -82,4 +86,13 @@ pub struct Thought {
     pub context: Option<String>,
     /// Unix timestamp when this thought was created.
     pub created_at: i64,
+    /// Salience score [0.0, 1.0] — how important this thought is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salience: Option<f64>,
+    /// Memory tier: "sensory", "working", or "long_term".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_tier: Option<String>,
+    /// Current strength [0.0, 1.0] — decays over time per tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f64>,
 }

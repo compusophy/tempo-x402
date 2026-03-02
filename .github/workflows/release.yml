@@ -244,10 +244,18 @@ jobs:
           publish_crate() {
             local crate="$1"
             echo "📦 Publishing $crate..."
-            cargo publish -p "$crate" --no-verify
-            echo "✓ Published $crate"
-            echo "Waiting for crates.io index to update..."
-            sleep 30
+            if cargo publish -p "$crate" --no-verify 2>&1 | tee /tmp/publish.log; then
+              echo "✓ Published $crate"
+              echo "Waiting for crates.io index to update..."
+              sleep 30
+            elif grep -q "already exists" /tmp/publish.log; then
+              echo "⏭ $crate already published, skipping"
+              sleep 5
+            else
+              echo "❌ Failed to publish $crate"
+              cat /tmp/publish.log
+              return 1
+            fi
           }
 
           # Layer 1: core (no workspace deps)
