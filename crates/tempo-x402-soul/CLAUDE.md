@@ -25,10 +25,11 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 | `llm.rs` | Gemini API client with thought_signature support |
 | `thinking.rs` | The main observe → think → tool loop |
 | `chat.rs` | Interactive chat handler with mode detection |
-| `db.rs` | SQLite: thoughts, soul_state, mutations, tools, pattern_counts tables + neuroplastic queries |
+| `db.rs` | SQLite: thoughts, soul_state, mutations, tools, pattern_counts, beliefs tables + neuroplastic queries |
 | `memory.rs` | Thought types (Observation, Reasoning, Decision, Prediction, etc.) + salience/tier/strength fields |
 | `neuroplastic.rs` | Salience scoring, tiered memory decay, prediction error — the learning loop |
 | `persistent_memory.rs` | Persistent markdown memory file — read/seed/update, 4KB cap |
+| `world_model.rs` | Structured belief system: Belief, BeliefDomain, Confidence, ModelUpdate types + formatters |
 
 ## Safety Layers (7 deep)
 
@@ -59,17 +60,33 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 - Direct push mode (`SOUL_DIRECT_PUSH=true`): pushes to fork's main branch directly, triggering auto-deploy. Used for self-editing instances.
 - Deep model: `SOUL_DIRECT_PUSH` + `SOUL_AUTONOMOUS_CODING` together use Gemini Pro (think model) instead of Flash for deeper reasoning
 - Persistent memory: soul reads `/data/soul_memory.md` every cycle, can update via `update_memory` tool, seeded on first boot, 4KB cap
-- Structured thought retrieval: salience-weighted when neuroplastic enabled (most important thoughts first), falls back to recency
-- Memory consolidation: every 10 cycles, summarize last 20 substantive thoughts into a MemoryConsolidation thought (LongTerm tier)
+- Structured thought retrieval: salience-weighted when neuroplastic enabled (most important thoughts first), falls back to recency — includes Reflection and ToolExecution types
+- Memory consolidation: every 10 cycles, summarize last 20 substantive thoughts (including Reflection and Prediction) into a MemoryConsolidation thought (LongTerm tier)
 - `register_endpoint` tool: full x402 payment flow (402 → sign → retry), Code mode only, requires `EVM_PRIVATE_KEY`
+- `check_self` tool: whitelisted self-introspection (health, analytics, analytics/{slug}, soul/status), available in Observe/Chat/Code modes
+- Per-endpoint reward signal: `RewardBreakdown` tracks new/growing/stagnant endpoints, replaces crude total_payments diff
 - Neuroplastic memory: salience scoring (novelty 30%, prediction_error 25%, reward 25%, recency 10%, reinforcement 10%)
 - Memory tiers: Sensory (0.3 decay/cycle, ~2 cycles), Working (0.95, ~90 cycles), LongTerm (0.995, near-permanent, never pruned)
 - Prediction system: linear extrapolation of payments/revenue/endpoints/children, prediction error surfaced in prompt when >30%
 - Hebbian reinforcement: recalled thoughts get a +0.05 strength boost; strength decays per tier each cycle
 - Auto-promotion: sensory thoughts with salience >0.6 promoted to working tier after decay
 - Pattern counting: content fingerprints (first 60 chars) tracked in `pattern_counts` table for novelty detection
-- Schema migration: `PRAGMA user_version` based, ALTER TABLE for backward compat (existing thoughts get NULL for new columns)
+- Schema migration: `PRAGMA user_version` based (v1: neuroplastic columns, v2: beliefs table), ALTER TABLE for backward compat
 - Gated by `SOUL_NEUROPLASTIC` env var (default true) — harmless if false, just skips salience/decay/prediction
+- **Feedback loop**: Observe → [CODE] → Phase 2 (Code mode, write/edit/commit) → Phase 3 (Reflection: check_self, verify, record learnings)
+- Phase 3 reflection: 5-tool budget, non-deep model, receives mutation context (SHA, pass/fail, files) + reward breakdown (new/growing/stagnant endpoints)
+- Reflection salience is dynamic: base 0.5 + reward contribution (max 0.3), tied to actual endpoint performance
+- Mutation history (last 5 commits with check/test pass/fail) and endpoint summary table (slug, price, requests, payments, revenue) provided in think context
+- Reflection thoughts are retrieved in future cycles (salience-weighted) so the soul learns from past outcomes
+- **World model**: structured beliefs (domain/subject/predicate/value/confidence) replace opaque thought strings for factual knowledge
+- World model domains: Node, Endpoints, Codebase, Strategy, Self_ — each belief is a queryable fact
+- Auto-beliefs: `sync_auto_beliefs()` runs every cycle before LLM, creates High-confidence beliefs from snapshot (node stats + per-endpoint metrics)
+- Model update protocol: LLM outputs JSON array of `[{op: create/update/confirm/invalidate, ...}]` parsed by `apply_model_updates()`
+- Graceful degradation: if LLM output doesn't contain valid JSON array, entire output treated as free-text reasoning (backward compat)
+- Belief confidence decay: time-based — High→Medium after 5 cycles (~25min), Medium→Low after 10, Low→inactive after 20
+- Beliefs table: `db.rs` migration v2, UNIQUE INDEX on `(domain, subject, predicate) WHERE active=1`, upsert bumps confirmation_count
+- World model prompt: replaces raw snapshot JSON with structured view grouped by domain, shows changes since last cycle + pending questions
+- Thoughts table still used for free-text reasoning, tool executions, mutations — beliefs supplement, don't replace
 
 ## Env Vars
 
@@ -106,6 +123,7 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 - **Dynamic tool registry**: `tool_registry.rs` — meta-tools, dynamic tool execution, shell handlers
 - **Persistent memory**: `persistent_memory.rs` — read/seed/update memory file, 4KB cap
 - **Neuroplastic memory**: `neuroplastic.rs` — salience algorithm, tier assignment, prediction, decay rates
-- **Database schema**: `db.rs` — `thoughts` + `soul_state` + `mutations` + `tools` + `pattern_counts` tables
+- **Database schema**: `db.rs` — `thoughts` + `soul_state` + `mutations` + `tools` + `pattern_counts` + `beliefs` tables
+- **World model**: `world_model.rs` — belief types + formatters; `thinking.rs` — sync_auto_beliefs, apply_model_updates; `prompts.rs` — world model view builder
 - **Observer trait**: `observer.rs` — changing `NodeSnapshot` fields affects all implementors
 - **Used by**: `x402-node` stores `Arc<SoulDatabase>` in `NodeState`, exposes via `GET /soul/status`, implements `NodeObserver` in `soul_observer.rs`

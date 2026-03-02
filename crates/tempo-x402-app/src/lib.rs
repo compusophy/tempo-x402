@@ -1259,6 +1259,25 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
                 let tools_enabled = data.get("tools_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
                 let coding_enabled = data.get("coding_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
 
+                // Cycle health metrics
+                let cycle_health = data.get("cycle_health");
+                let boring_streak = cycle_health
+                    .and_then(|h| h.get("boring_streak"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let active_streak = cycle_health
+                    .and_then(|h| h.get("active_streak"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let total_code_entries = cycle_health
+                    .and_then(|h| h.get("total_code_entries"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let last_decisions = cycle_health
+                    .and_then(|h| h.get("last_cycle_decisions"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+
                 let (badge_class, badge_label) = if !active {
                     ("soul-status--gray", "Inactive")
                 } else if dormant {
@@ -1309,10 +1328,37 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
                                 <span class="stat-value">{last_thought_str}</span>
                             </div>
                             <div class="stat-card">
-                                <span class="stat-label">"Mode"</span>
-                                <span class="stat-value">{mode.clone()}</span>
+                                <span class="stat-label">"Code Entries"</span>
+                                <span class="stat-value">{total_code_entries.to_string()}</span>
                             </div>
                         </div>
+
+                        // Cycle health bar
+                        {if active && !dormant {
+                            let streak_class = if boring_streak >= 5 {
+                                "soul-streak soul-streak--danger"
+                            } else if boring_streak >= 3 {
+                                "soul-streak soul-streak--warn"
+                            } else if active_streak >= 2 {
+                                "soul-streak soul-streak--active"
+                            } else {
+                                "soul-streak"
+                            };
+                            let streak_label = if boring_streak >= 3 {
+                                format!("idle x{} (no decisions)", boring_streak)
+                            } else if active_streak >= 2 {
+                                format!("active x{} ({} decisions last cycle)", active_streak, last_decisions)
+                            } else {
+                                format!("mode: {}", mode)
+                            };
+                            Some(view! {
+                                <div class={streak_class}>
+                                    {streak_label}
+                                </div>
+                            })
+                        } else {
+                            None
+                        }}
 
                         // Feature flags
                         {if active {
@@ -1362,6 +1408,8 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
                                             "decision" => "decide",
                                             "reflection" => "reflect",
                                             "mutation" => "mutate",
+                                            "tool_execution" => "tool",
+                                            "prediction" => "pred",
                                             "cross_hemisphere" => "cross",
                                             "escalation" => "escalate",
                                             "memory_consolidation" => "memory",

@@ -290,6 +290,18 @@ pub fn delete_failed_child(db: &Database, instance_id: &str) -> Result<bool, Gat
     })
 }
 
+/// Force-delete a child record regardless of status.
+/// Returns `Ok(true)` if a row was deleted, `Ok(false)` if not found.
+pub fn delete_child(db: &Database, instance_id: &str) -> Result<bool, GatewayError> {
+    db.with_connection(|conn| {
+        let rows = conn.execute(
+            "DELETE FROM children WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        Ok(rows > 0)
+    })
+}
+
 /// Update a child's status.
 pub fn update_child_status(
     db: &Database,

@@ -5160,7 +5160,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alloy",
  "base64",
@@ -5183,7 +5183,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-agent"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -5198,7 +5198,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-app"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64",
  "console_error_panic_hook",
@@ -5220,7 +5220,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-client"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alloy",
  "base64",
@@ -5237,7 +5237,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-facilitator"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "actix-cors",
  "actix-governor",
@@ -5259,7 +5259,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-gateway"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "actix-cors",
  "actix-files",
@@ -5288,7 +5288,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-identity"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alloy",
  "chrono",
@@ -5306,7 +5306,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-mind"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -5321,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-node"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "actix-files",
  "actix-governor",
@@ -5350,7 +5350,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-security-audit"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "regex",
  "walkdir",
@@ -5358,7 +5358,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-server"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "actix-cors",
  "actix-governor",
@@ -5381,7 +5381,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-soul"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64",
  "chrono",
@@ -5400,7 +5400,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-x402-wallet"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alloy",
  "base64",

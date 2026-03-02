@@ -15,7 +15,19 @@ struct SoulStatus {
     mode: String,
     tools_enabled: bool,
     coding_enabled: bool,
+    /// Cycle health metrics for observability.
+    cycle_health: CycleHealth,
     recent_thoughts: Vec<ThoughtEntry>,
+}
+
+#[derive(Serialize)]
+struct CycleHealth {
+    boring_streak: u32,
+    active_streak: u32,
+    last_cycle_tool_calls: u32,
+    last_cycle_decisions: u32,
+    last_cycle_entered_code: bool,
+    total_code_entries: u64,
 }
 
 #[derive(Serialize)]
@@ -42,6 +54,14 @@ async fn soul_status(state: web::Data<NodeState>) -> HttpResponse {
                 "mode": "observe",
                 "tools_enabled": tools_enabled,
                 "coding_enabled": coding_enabled,
+                "cycle_health": {
+                    "boring_streak": 0,
+                    "active_streak": 0,
+                    "last_cycle_tool_calls": 0,
+                    "last_cycle_decisions": 0,
+                    "last_cycle_entered_code": false,
+                    "total_code_entries": 0
+                },
                 "recent_thoughts": []
             }));
         }
@@ -71,9 +91,54 @@ async fn soul_status(state: web::Data<NodeState>) -> HttpResponse {
         })
         .collect();
 
-    let (mode, tools_enabled, coding_enabled) = match &state.soul_config {
-        Some(c) => ("observe".to_string(), c.tools_enabled, c.coding_enabled),
-        None => ("observe".to_string(), false, false),
+    let (tools_enabled, coding_enabled) = match &state.soul_config {
+        Some(c) => (c.tools_enabled, c.coding_enabled),
+        None => (false, false),
+    };
+
+    // Read cycle health metrics from soul_state
+    let boring_streak: u32 = soul_db
+        .get_state("boring_streak")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let active_streak: u32 = soul_db
+        .get_state("active_streak")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let last_cycle_tool_calls: u32 = soul_db
+        .get_state("last_cycle_tool_calls")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let last_cycle_decisions: u32 = soul_db
+        .get_state("last_cycle_decisions")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let last_cycle_entered_code: bool = soul_db
+        .get_state("last_cycle_entered_code")
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(false);
+    let total_code_entries: u64 = soul_db
+        .get_state("total_code_entries")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    // Determine displayed mode based on last cycle
+    let mode = if last_cycle_entered_code {
+        "code".to_string()
+    } else {
+        "observe".to_string()
     };
 
     HttpResponse::Ok().json(SoulStatus {
@@ -84,6 +149,14 @@ async fn soul_status(state: web::Data<NodeState>) -> HttpResponse {
         mode,
         tools_enabled,
         coding_enabled,
+        cycle_health: CycleHealth {
+            boring_streak,
+            active_streak,
+            last_cycle_tool_calls,
+            last_cycle_decisions,
+            last_cycle_entered_code,
+            total_code_entries,
+        },
         recent_thoughts,
     })
 }

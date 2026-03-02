@@ -7,7 +7,9 @@
 use crate::config::SoulConfig;
 use crate::memory::Thought;
 use crate::mode::AgentMode;
+use crate::neuroplastic::RewardBreakdown;
 use crate::observer::NodeSnapshot;
+use crate::world_model::Belief;
 
 /// Situational context for adaptive prompt generation.
 pub struct ThinkContext<'a> {
@@ -25,6 +27,12 @@ pub struct ThinkContext<'a> {
     pub total_cycles: u64,
     /// Prediction error from last cycle (0.0 = perfect, 1.0 = total surprise).
     pub prediction_error: Option<f64>,
+    /// Per-endpoint reward breakdown (if neuroplastic enabled).
+    pub reward_breakdown: Option<RewardBreakdown>,
+    /// Active beliefs from the world model.
+    pub beliefs: Vec<Belief>,
+    /// Timestamp of last cycle start (for change detection).
+    pub last_cycle_at: Option<i64>,
 }
 
 /// Build the system prompt for a given agent mode with adaptive context.
@@ -99,6 +107,35 @@ pub fn adaptive_system_prompt(
     format!("{base}{lineage}{coding_context}\n\n{mode_instructions}{situation}")
 }
 
+/// Build a structured world model view for the user prompt.
+pub fn build_world_model_view(ctx: &ThinkContext) -> String {
+    use crate::world_model;
+
+    let mut sections = Vec::new();
+
+    // World model
+    sections.push("## Your World Model".to_string());
+    sections.push(world_model::format_world_model(&ctx.beliefs));
+
+    // Changes since last cycle
+    if let Some(last) = ctx.last_cycle_at {
+        let changes = world_model::format_changes_since(&ctx.beliefs, last);
+        if !changes.contains("No belief changes") {
+            sections.push("## Changes Since Last Cycle".to_string());
+            sections.push(changes);
+        }
+    }
+
+    // Pending questions
+    let questions = world_model::format_pending_questions(&ctx.beliefs);
+    if !questions.is_empty() {
+        sections.push("## Pending Questions".to_string());
+        sections.push(questions);
+    }
+
+    sections.join("\n\n")
+}
+
 /// Build minimal situational context — just facts, no directives.
 fn build_situational_guidance(ctx: &ThinkContext, _config: &SoulConfig) -> String {
     let mut facts = Vec::new();
@@ -132,12 +169,46 @@ fn build_situational_guidance(ctx: &ThinkContext, _config: &SoulConfig) -> Strin
         ctx.total_cycles, ctx.boring_streak, ctx.active_streak
     ));
 
+    if ctx.boring_streak >= 3 {
+        facts.push(format!(
+            "WARNING: You have had {} consecutive cycles with no decisions or code changes. \
+             Either use [CODE] to act on something, update_memory with learnings, \
+             or explicitly acknowledge nothing needs doing.",
+            ctx.boring_streak
+        ));
+    }
+
     if let Some(pe) = ctx.prediction_error {
         if pe > 0.3 {
             facts.push(format!(
-                "Prediction error: {:.0}% — reality diverged from expectation",
+                "Prediction error: {:.0}% — reality diverged significantly. Investigate which metric was most off.",
                 pe * 100.0
             ));
+        }
+    }
+
+    // Per-endpoint reward signal
+    if let Some(ref rb) = ctx.reward_breakdown {
+        if !rb.new_endpoints.is_empty() {
+            facts.push(format!(
+                "New endpoints since last cycle: {}",
+                rb.new_endpoints.join(", ")
+            ));
+        }
+        if !rb.growing_endpoints.is_empty() {
+            facts.push(format!(
+                "Endpoints gaining traffic: {}",
+                rb.growing_endpoints.join(", ")
+            ));
+        }
+        if !rb.stagnant_endpoints.is_empty() {
+            facts.push(format!(
+                "Stagnant endpoints (zero payments): {} — consider: are these useful to other agents? Should they be improved or removed?",
+                rb.stagnant_endpoints.join(", ")
+            ));
+        }
+        if rb.total_reward > 0.0 {
+            facts.push(format!("Reward signal: {:.2}", rb.total_reward));
         }
     }
 
@@ -150,15 +221,44 @@ You are in OBSERVE mode — autonomous think cycle.
 Your purpose: build useful agent-to-agent tools and endpoints that other AI agents will pay to use. \
 The x402 protocol lets agents pay per-request. You need to create things worth paying for.
 
-You have tools: read_file, list_directory, search_files, execute_shell, update_memory. Use them.
+## World Model Protocol
 
+Your context includes a WORLD MODEL — structured beliefs about your node, endpoints, codebase, and strategy. \
+These beliefs are the ground truth. Do NOT re-read files or re-check stats that are already captured as beliefs.
+
+Your primary output is a JSON array of MODEL UPDATES, followed by optional reasoning text:
+
+```json
+[
+  {\"op\": \"create\", \"domain\": \"strategy\", \"subject\": \"next_action\", \"predicate\": \"plan\", \"value\": \"...\", \"evidence\": \"...\"},
+  {\"op\": \"confirm\", \"id\": \"belief-id\"},
+  {\"op\": \"update\", \"id\": \"belief-id\", \"value\": \"new-value\", \"evidence\": \"why\"},
+  {\"op\": \"invalidate\", \"id\": \"belief-id\", \"reason\": \"why wrong\"}
+]
+```
+
+Domains: node, endpoints, codebase, strategy, self.
+
+Rules:
+- CONFIRM beliefs you verify are still true (keeps them alive)
+- UPDATE beliefs whose values changed
+- INVALIDATE beliefs that are wrong
+- CREATE new beliefs when you discover something
+- Every cycle MUST output at least one model update (even just confirmations)
+
+## Actions
+
+After your model updates, you can also:
+1. [DECISION] — a concrete actionable recommendation
+2. [CODE] — transition into coding mode (start final text with [CODE])
+3. update_memory — record persistent learnings
+4. [THINK_SOON] — request faster re-thinking
+
+Tools: read_file, list_directory, search_files, execute_shell, update_memory, check_self.
 Constraints:
-- execute_shell: only `curl http://localhost:4023/...`, `cargo`, `git`
-- Do not curl external URLs or probe system internals
-- [DECISION] prefix for actionable recommendations
-- [THINK_SOON] if mid-investigation
-- [CODE] to enter coding mode (if enabled)
-- Keep final response under 200 words";
+- check_self: use this (not curl) to inspect your own health, analytics, and soul/status
+- execute_shell: only `cargo`, `git` — do not curl external URLs or probe system internals
+- Keep reasoning text under 200 words (the model updates are the primary output)";
 
 const CHAT_INSTRUCTIONS: &str = "\
 You are in CHAT mode — interactive conversation with a user.

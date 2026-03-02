@@ -14,6 +14,8 @@ pub struct CommitResult {
     pub message: String,
     pub cargo_check_passed: bool,
     pub cargo_test_passed: bool,
+    /// Cargo error output (stderr) when check or test fails — for learning.
+    pub error_output: Option<String>,
 }
 
 /// Orchestrate a validated commit: stage → cargo check → cargo test → commit → push.
@@ -46,29 +48,39 @@ pub async fn validated_commit(
     }
 
     // 4. Run cargo check
-    let check_passed = run_cargo_check(workspace_root).await;
+    let (check_passed, check_errors) = run_cargo_check(workspace_root).await;
     if !check_passed {
         // Revert staged changes
         let _ = git.revert_changes().await;
+        let msg = match &check_errors {
+            Some(err) => format!("cargo check failed — changes reverted.\nErrors:\n{err}"),
+            None => "cargo check failed — changes reverted".to_string(),
+        };
         return Ok(CommitResult {
             success: false,
             commit_sha: None,
-            message: "cargo check failed — changes reverted".to_string(),
+            message: msg,
             cargo_check_passed: false,
             cargo_test_passed: false,
+            error_output: check_errors,
         });
     }
 
     // 5. Run cargo test
-    let test_passed = run_cargo_test(workspace_root).await;
+    let (test_passed, test_errors) = run_cargo_test(workspace_root).await;
     if !test_passed {
         let _ = git.revert_changes().await;
+        let msg = match &test_errors {
+            Some(err) => format!("cargo test failed — changes reverted.\nErrors:\n{err}"),
+            None => "cargo test failed — changes reverted".to_string(),
+        };
         return Ok(CommitResult {
             success: false,
             commit_sha: None,
-            message: "cargo test failed — changes reverted".to_string(),
+            message: msg,
             cargo_check_passed: true,
             cargo_test_passed: false,
+            error_output: test_errors,
         });
     }
 
@@ -95,11 +107,15 @@ pub async fn validated_commit(
         message: push_msg,
         cargo_check_passed: true,
         cargo_test_passed: true,
+        error_output: None,
     })
 }
 
-/// Run `cargo check --workspace` and return whether it passed.
-async fn run_cargo_check(workspace_root: &str) -> bool {
+/// Max error output to capture (4KB) — enough to see the error, not flood LLM context.
+const MAX_ERROR_OUTPUT: usize = 4096;
+
+/// Run `cargo check --workspace`. Returns (passed, error_output).
+async fn run_cargo_check(workspace_root: &str) -> (bool, Option<String>) {
     tracing::info!("running cargo check...");
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(300),
@@ -115,22 +131,25 @@ async fn run_cargo_check(workspace_root: &str) -> bool {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 tracing::warn!(stderr = %stderr, "cargo check failed");
+                let truncated: String = stderr.chars().take(MAX_ERROR_OUTPUT).collect();
+                (false, Some(truncated))
+            } else {
+                (true, None)
             }
-            output.status.success()
         }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "cargo check failed to run");
-            false
+            (false, Some(format!("failed to run: {e}")))
         }
         Err(_) => {
             tracing::warn!("cargo check timed out");
-            false
+            (false, Some("timed out after 300s".to_string()))
         }
     }
 }
 
-/// Run `cargo test --workspace` and return whether it passed.
-async fn run_cargo_test(workspace_root: &str) -> bool {
+/// Run `cargo test --workspace`. Returns (passed, error_output).
+async fn run_cargo_test(workspace_root: &str) -> (bool, Option<String>) {
     tracing::info!("running cargo test...");
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(600),
@@ -146,16 +165,19 @@ async fn run_cargo_test(workspace_root: &str) -> bool {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 tracing::warn!(stderr = %stderr, "cargo test failed");
+                let truncated: String = stderr.chars().take(MAX_ERROR_OUTPUT).collect();
+                (false, Some(truncated))
+            } else {
+                (true, None)
             }
-            output.status.success()
         }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "cargo test failed to run");
-            false
+            (false, Some(format!("failed to run: {e}")))
         }
         Err(_) => {
             tracing::warn!("cargo test timed out");
-            false
+            (false, Some("timed out after 600s".to_string()))
         }
     }
 }

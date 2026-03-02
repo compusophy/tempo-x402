@@ -208,6 +208,13 @@ impl ToolExecutor {
                     .ok_or_else(|| "missing 'content' argument".to_string())?;
                 self.update_memory(content).await
             }
+            "check_self" => {
+                let endpoint = args
+                    .get("endpoint")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'endpoint' argument".to_string())?;
+                self.check_self(endpoint).await
+            }
             "register_endpoint" => {
                 let slug = args
                     .get("slug")
@@ -808,6 +815,71 @@ impl ToolExecutor {
         }
     }
 
+    /// Check the node's own endpoints for self-introspection.
+    /// Whitelisted to: health, analytics, analytics/{slug}, soul/status.
+    async fn check_self(&self, endpoint: &str) -> Result<ToolResult, String> {
+        let start = std::time::Instant::now();
+
+        // Whitelist check: only allow safe read-only endpoints
+        let trimmed = endpoint.trim_start_matches('/');
+        let allowed = trimmed == "health"
+            || trimmed == "analytics"
+            || trimmed == "soul/status"
+            || trimmed.starts_with("analytics/");
+
+        if !allowed {
+            return Err(format!(
+                "endpoint '/{trimmed}' not allowed. Use: health, analytics, analytics/{{slug}}, soul/status"
+            ));
+        }
+
+        let gateway_url = self
+            .gateway_url
+            .as_deref()
+            .unwrap_or("http://localhost:4023");
+
+        let url = format!("{gateway_url}/{trimmed}");
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let duration_ms = start.elapsed().as_millis() as u64;
+
+                // Truncate body if huge
+                let body_truncated = if body.len() > MAX_OUTPUT_BYTES {
+                    format!(
+                        "{}\n... (truncated)",
+                        body.chars().take(MAX_OUTPUT_BYTES).collect::<String>()
+                    )
+                } else {
+                    body
+                };
+
+                Ok(ToolResult {
+                    stdout: body_truncated,
+                    stderr: String::new(),
+                    exit_code: status.as_u16() as i32,
+                    duration_ms,
+                })
+            }
+            Err(e) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                Ok(ToolResult {
+                    stdout: String::new(),
+                    stderr: format!("request failed: {e}"),
+                    exit_code: -1,
+                    duration_ms,
+                })
+            }
+        }
+    }
+
     /// Create an issue on the upstream repo.
     async fn create_issue(
         &self,
@@ -852,6 +924,24 @@ pub fn update_memory_tool() -> FunctionDeclaration {
                 }
             },
             "required": ["content"]
+        }),
+    }
+}
+
+/// Return the check_self tool declaration (Observe + Chat + Code modes).
+pub fn check_self_tool() -> FunctionDeclaration {
+    FunctionDeclaration {
+        name: "check_self".to_string(),
+        description: "Check your own node's endpoints for self-introspection. Whitelisted endpoints: health, analytics, analytics/{slug}, soul/status. Returns the HTTP response body and status code.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "endpoint": {
+                    "type": "string",
+                    "description": "The endpoint path to check (e.g. 'health', 'analytics', 'analytics/weather', 'soul/status')"
+                }
+            },
+            "required": ["endpoint"]
         }),
     }
 }

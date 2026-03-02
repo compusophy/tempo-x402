@@ -24,4 +24,8 @@ jobs:
           FACILITATOR_URL: ${{ secrets.FACILITATOR_URL }}
           FACILITATOR_PRIVATE_KEY: ${{ secrets.FACILITATOR_PRIVATE_KEY }}
           FACILITATOR_ADDRESS: ${{ secrets.FACILITATOR_ADDRESS }}
-        run: cargo test --workspace -- --ignored --nocapture
+        run: |
+          # Only run the gateway e2e test (payment flow).
+          # The clone e2e test is excluded: it spawns real Railway services and costs money.
+          # Run it manually: cargo test -p tempo-x402-client --test e2e_clone -- --ignored --nocapture
+          cargo test -p tempo-x402-client --test e2e_gateway -- --ignored --nocapture
