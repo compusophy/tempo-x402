@@ -168,6 +168,12 @@ pub struct EthCallRequest {
     pub data: String,
 }
 
+#[derive(Deserialize)]
+pub struct AbiEncodeRequest {
+    pub signature: String,
+    pub args: Vec<Value>,
+}
+
 #[post("/get-balance")]
 pub async fn get_balance(
     state: web::Data<NodeState>,
@@ -456,6 +462,39 @@ pub async fn keccak256(body: String) -> impl Responder {
     }))
 }
 
+#[post("/abi-encode")]
+pub async fn abi_encode(body: web::Json<AbiEncodeRequest>) -> impl Responder {
+    use alloy::dyn_abi::Specifier;
+    
+    // Parse the function signature
+    let func = match alloy::dyn_abi::Function::parse(&body.signature) {
+        Ok(f) => f,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Invalid signature: {}", e) })),
+    };
+
+    // Convert JSON values to DynSolValue
+    let mut sol_args = Vec::new();
+    if body.args.len() != func.inputs.len() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ 
+            "error": format!("Argument count mismatch: expected {}, got {}", func.inputs.len(), body.args.len()) 
+        }));
+    }
+
+    for (i, (arg, input)) in body.args.iter().zip(func.inputs.iter()).enumerate() {
+        match input.ty.coerce_json(arg) {
+            Ok(val) => sol_args.push(val),
+            Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ 
+                "error": format!("Failed to parse argument {}: {}", i, e) 
+            })),
+        }
+    }
+
+    match func.abi_encode_input(&sol_args) {
+        Ok(encoded) => HttpResponse::Ok().json(serde_json::json!({ "result": alloy::hex::encode(encoded) })),
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": format!("Encoding failed: {}", e) })),
+    }
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/utils")
@@ -473,6 +512,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(get_allowance)
             .service(eth_call)
             .service(get_block)
+            .service(abi_encode)
     );
 }
 
@@ -555,6 +595,22 @@ mod tests {
         assert!(resp.status().is_success());
         let body: Value = test::read_body_json(resp).await;
         assert_eq!(body["x-test-header"], "test-value");
+    }
+
+    #[actix_web::test]
+    async fn test_abi_encode() {
+        let app = test::init_service(App::new().service(abi_encode)).await;
+        let req = test::TestRequest::post()
+            .uri("/abi-encode")
+            .set_json(serde_json::json!({
+                "signature": "transfer(address,uint256)",
+                "args": ["0x0000000000000000000000000000000000000000", "1000"]
+            }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let body: Value = test::read_body_json(resp).await;
+        assert!(body["result"].as_str().is_some());
     }
 
     #[test]

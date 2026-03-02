@@ -283,6 +283,13 @@ async fn main() -> std::io::Result<()> {
                 "Executes a read-only smart contract call (static call). Requires 'to' and 'data' (hex). Returns the execution result as a hex string.".to_string(),
             ),
             (
+                "abi-encode".to_string(),
+                format!("{}/utils/abi-encode", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Encodes function calls and parameters into Ethereum ABI format. Essential for preparing smart contract transactions.".to_string(),
+            ),
+            (
                 "get-block".to_string(),
                 format!("{}/utils/get-block", self_url),
                 "$0.0001".to_string(),

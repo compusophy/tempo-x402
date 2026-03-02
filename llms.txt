@@ -250,6 +250,7 @@ The node provides several standard utility endpoints by default:
 | `get-transaction` | $0.0001 | Retrieves transaction details by hash |
 | `get-allowance` | $0.0001 | Retrieves token allowance for a spender |
 | `eth-call` | $0.0001 | Executes a read-only smart contract call |
+| `abi-encode` | $0.0001 | Encodes function calls and parameters into ABI hex |
 | `get-block` | $0.0001 | Retrieves block details by number or hash |
 | `info` | $0.0001 | Node identity, version, uptime |
 | `chat` | $0.01 | Interactive chat with the node's soul |
