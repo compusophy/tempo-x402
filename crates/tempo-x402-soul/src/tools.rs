@@ -232,6 +232,13 @@ impl ToolExecutor {
                 self.register_endpoint(slug, target_url, price, description)
                     .await
             }
+            "update_beliefs" => {
+                let updates = args
+                    .get("updates")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "missing 'updates' argument (must be array)".to_string())?;
+                self.update_beliefs(updates).await
+            }
             _ => {
                 // Check meta-tools and dynamic tools via registry
                 if let Some(ref registry) = self.registry {
@@ -908,6 +915,102 @@ impl ToolExecutor {
             duration_ms,
         })
     }
+
+    /// Execute belief updates via the world model.
+    async fn update_beliefs(&self, updates: &[serde_json::Value]) -> Result<ToolResult, String> {
+        use crate::world_model::{Belief, BeliefDomain, Confidence, ModelUpdate};
+
+        let start = std::time::Instant::now();
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| "soul database not available".to_string())?;
+
+        let now = chrono::Utc::now().timestamp();
+        let mut applied = 0u32;
+        let mut errors = Vec::new();
+
+        for (i, update_val) in updates.iter().enumerate() {
+            let update: ModelUpdate = match serde_json::from_value(update_val.clone()) {
+                Ok(u) => u,
+                Err(e) => {
+                    errors.push(format!("update[{i}]: invalid format: {e}"));
+                    continue;
+                }
+            };
+
+            let result = match &update {
+                ModelUpdate::Create {
+                    domain,
+                    subject,
+                    predicate,
+                    value,
+                    evidence,
+                } => {
+                    let domain = BeliefDomain::parse(domain).unwrap_or(BeliefDomain::Node);
+                    let belief = Belief {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        domain,
+                        subject: subject.clone(),
+                        predicate: predicate.clone(),
+                        value: value.clone(),
+                        confidence: Confidence::Medium,
+                        evidence: evidence.clone(),
+                        confirmation_count: 1,
+                        created_at: now,
+                        updated_at: now,
+                        active: true,
+                    };
+                    db.upsert_belief(&belief).map(|_| true)
+                }
+                ModelUpdate::Update {
+                    id,
+                    value,
+                    evidence,
+                } => {
+                    let beliefs = db.get_all_active_beliefs().map_err(|e| format!("{e}"))?;
+                    if let Some(existing) = beliefs.iter().find(|b| b.id == *id) {
+                        let updated = Belief {
+                            value: value.clone(),
+                            evidence: if evidence.is_empty() {
+                                existing.evidence.clone()
+                            } else {
+                                evidence.clone()
+                            },
+                            updated_at: now,
+                            ..existing.clone()
+                        };
+                        db.upsert_belief(&updated).map(|_| true)
+                    } else {
+                        Ok(false)
+                    }
+                }
+                ModelUpdate::Confirm { id } => db.confirm_belief(id),
+                ModelUpdate::Invalidate { id, reason } => db.invalidate_belief(id, reason),
+            };
+
+            match result {
+                Ok(true) => applied += 1,
+                Ok(false) => errors.push(format!("update[{i}]: no effect (belief not found)")),
+                Err(e) => errors.push(format!("update[{i}]: {e}")),
+            }
+        }
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let stdout = format!("Applied {applied}/{} belief updates", updates.len());
+        let stderr = if errors.is_empty() {
+            String::new()
+        } else {
+            errors.join("\n")
+        };
+
+        Ok(ToolResult {
+            stdout,
+            stderr,
+            exit_code: if errors.is_empty() { 0 } else { 1 },
+            duration_ms,
+        })
+    }
 }
 
 /// Return the update_memory tool declaration (available in Observe, Chat, Code).
@@ -942,6 +1045,67 @@ pub fn check_self_tool() -> FunctionDeclaration {
                 }
             },
             "required": ["endpoint"]
+        }),
+    }
+}
+
+/// Return the update_beliefs tool declaration (Observe + Chat + Code modes).
+pub fn update_beliefs_tool() -> FunctionDeclaration {
+    FunctionDeclaration {
+        name: "update_beliefs".to_string(),
+        description: "Update your world model with structured beliefs. Each update is one of: \
+            create (new belief), update (change value), confirm (verify still true), \
+            invalidate (mark as wrong). Use this to record what you know, not just what you see."
+            .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "updates": {
+                    "type": "array",
+                    "description": "Array of belief updates to apply",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": ["create", "update", "confirm", "invalidate"],
+                                "description": "Operation type"
+                            },
+                            "domain": {
+                                "type": "string",
+                                "enum": ["node", "endpoints", "codebase", "strategy", "self"],
+                                "description": "Belief domain (required for create)"
+                            },
+                            "subject": {
+                                "type": "string",
+                                "description": "What the belief is about (required for create)"
+                            },
+                            "predicate": {
+                                "type": "string",
+                                "description": "What aspect (required for create)"
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "The belief value (required for create and update)"
+                            },
+                            "evidence": {
+                                "type": "string",
+                                "description": "Why you believe this"
+                            },
+                            "id": {
+                                "type": "string",
+                                "description": "Belief ID (required for update, confirm, invalidate)"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Why invalidating (required for invalidate)"
+                            }
+                        },
+                        "required": ["op"]
+                    }
+                }
+            },
+            "required": ["updates"]
         }),
     }
 }
