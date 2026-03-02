@@ -18,6 +18,20 @@ struct SoulStatus {
     /// Cycle health metrics for observability.
     cycle_health: CycleHealth,
     recent_thoughts: Vec<ThoughtEntry>,
+    /// Active beliefs from the world model.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    beliefs: Vec<BeliefEntry>,
+}
+
+#[derive(Serialize)]
+struct BeliefEntry {
+    id: String,
+    domain: String,
+    subject: String,
+    predicate: String,
+    value: String,
+    confidence: String,
+    confirmation_count: u32,
 }
 
 #[derive(Serialize)]
@@ -141,6 +155,22 @@ async fn soul_status(state: web::Data<NodeState>) -> HttpResponse {
         "observe".to_string()
     };
 
+    // Fetch world model beliefs
+    let beliefs: Vec<BeliefEntry> = soul_db
+        .get_all_active_beliefs()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|b| BeliefEntry {
+            id: b.id,
+            domain: b.domain.as_str().to_string(),
+            subject: b.subject,
+            predicate: b.predicate,
+            value: b.value,
+            confidence: b.confidence.as_str().to_string(),
+            confirmation_count: b.confirmation_count,
+        })
+        .collect();
+
     HttpResponse::Ok().json(SoulStatus {
         active: true,
         dormant: state.soul_dormant,
@@ -158,6 +188,7 @@ async fn soul_status(state: web::Data<NodeState>) -> HttpResponse {
             total_code_entries,
         },
         recent_thoughts,
+        beliefs,
     })
 }
 
