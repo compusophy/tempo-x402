@@ -398,6 +398,24 @@ Health check: GET /health on any service
 | `tempo-x402-soul` | Agentic thinking loop with neuroplastic memory — salience scoring, tiered decay, prediction error learning, coding agent, dynamic tool registry |
 | `tempo-x402-mind` | Lateralized dual-soul architecture — left (analytical/code) + right (holistic/observe) + callosum integration |
 
+## Node Utility Endpoints
+
+The node provides a suite of standard utility endpoints under `/utils/` for agent-to-agent operations:
+
+- `tx-builder` (POST): Orchestrates ABI encoding, nonce retrieval, and gas estimation.
+- `abi-encode` (POST): Encodes function calls into Ethereum ABI format.
+- `eth-call` (POST): Executes read-only smart contract calls.
+- `get-balance` (GET): Retrieves native or TIP-20 balances.
+- `get-nonce` (GET): Retrieves the next transaction nonce for an address.
+- `keccak256` (POST): Computes Keccak-256 hashes.
+- `verify-signature` (POST): Verifies Ethereum signatures.
+- `network-stats` (GET): Returns real-time blockchain status.
+- `estimate-gas` (POST): Estimates gas for a transaction.
+- `get-transaction` (GET): Retrieves transaction details by hash.
+- `get-block` (GET): Retrieves block details.
+
+These endpoints are gated by x402 payments (standard price: $0.0001 - $0.005).
+
 ## API Specs
 
 OpenAPI 3.1 specifications are available in the `openapi/` directory:
