@@ -320,7 +320,7 @@ async fn main() -> std::io::Result<()> {
             ),
         ];
         for (slug, target, price, amount, desc) in &endpoints {
-            match gateway_db.create_endpoint(slug, &owner, target, price, amount, Some(desc)) {
+            match gateway_db.create_endpoint(slug, &owner, target, price, amount, Some(desc.as_str())) {
                 Ok(_) => tracing::info!(slug, "Auto-registered endpoint"),
                 Err(_) => tracing::debug!(slug, "Endpoint already exists, skipping"),
             }
