@@ -1,15 +1,12 @@
 # tempo-x402-mind
 
-Library crate. Cognitive architecture for autonomous nodes.
+Library crate. Subconscious background processing for autonomous nodes.
 
-**Current (v1):** Dual-soul with forced lateralization (left=code, right=observe) + callosum integration bus. Works but imposes structure rather than letting it emerge.
-
-**Direction (v2):** Single soul per node with emergent multi-modal thinking. Specialization emerges across nodes (different environments → different capabilities), not within one. The callosum becomes cross-node integration. See `lib.rs` module doc for the full vision.
+The mind runs independently from the soul, sharing its database. The soul thinks (observe → reason → act). The mind maintains (decay, prune, promote, consolidate). One loop is conscious, the other is subconscious.
 
 ## Depends On
 
-- `x402` (core types)
-- `x402-soul` (Soul, SoulConfig, SoulDatabase, ThoughtType, NodeObserver, AgentMode)
+- `x402-soul` (SoulDatabase, LlmClient, Thought, ThoughtType)
 
 No dependency on node/gateway/identity/agent. The node crate integrates this.
 
@@ -17,41 +14,28 @@ No dependency on node/gateway/identity/agent. The node crate integrates this.
 
 | Module | Purpose |
 |--------|---------|
-| `config.rs` | MindConfig, HemisphereConfig — env var loading |
-| `hemisphere.rs` | HemisphereRole enum, specialization profiles (prompts, tools, intervals) |
-| `callosum.rs` | Integration bus: share (excitatory), gate (inhibitory), escalate (cross-wake) |
-| `memory.rs` | Cross-hemisphere memory access, WorkingMemory ring buffer |
-| `consolidation.rs` | LLM-powered memory consolidation (summarize N thoughts into 1) |
+| `config.rs` | MindConfig — env var loading |
+| `subconscious.rs` | Background loop: decay, prune, promote, belief decay, consolidation |
 
 ## Env Vars
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `MIND_ENABLED` | `false` | Master switch for dual-soul mode |
-| `MIND_LEFT_MODEL` | (from soul) | Override model for left hemisphere |
-| `MIND_RIGHT_MODEL` | (from soul) | Override model for right hemisphere |
-| `MIND_LEFT_INTERVAL` | `900` | Left hemisphere think interval (secs) |
-| `MIND_RIGHT_INTERVAL` | `1800` | Right hemisphere think interval (secs) |
-| `MIND_INTEGRATION_INTERVAL` | `300` | Callosum sync interval (secs) |
-| `MIND_ESCALATION_THRESHOLD` | `0.3` | Confidence threshold for System 2 activation |
-| `MIND_SHARED_DB` | `true` | Single DB vs separate DBs per hemisphere |
+| `MIND_ENABLED` | `true` | Master switch for subconscious loop |
+| `MIND_INTERVAL_SECS` | `3600` | How often the subconscious loop runs |
+| `MIND_CONSOLIDATION_EVERY` | `4` | Consolidate memory every N subconscious cycles |
+| `SOUL_PRUNE_THRESHOLD` | `0.01` | Strength threshold for pruning (shared with soul) |
 
 ## Non-Obvious Patterns
 
-- Both souls run in the same process — not two VMs
-- `MIND_ENABLED=false` falls back to single soul (backward compatible)
-- Left hemisphere: fast/code-oriented, System 1 (default action), 900s cycles
-- Right hemisphere: deep/observe-oriented, System 2 (slow override), 1800s cycles
-- Callosum is not a passive pipe — it actively gates conflicts and escalates uncertainty
-- `[UNCERTAIN]` in left's output triggers right hemisphere wake
-- `[URGENT]` in right's output triggers left hemisphere wake
-- WorkingMemory is in-memory only (ring buffer, not persisted) — ephemeral per hemisphere
-- Memory consolidation requires LLM — skipped in dormant mode
+- Shares the soul's database — no separate state or schema
+- Stores stats in soul_state table: `mind_total_cycles`, `mind_last_cycle_at`, `mind_last_consolidation_at`
+- Consolidation uses LLM if `GEMINI_API_KEY` is set, otherwise simple concatenation
+- All operations are idempotent — safe to restart at any time
+- `MIND_ENABLED=false` means no subconscious loop; soul still works fine (just no background maintenance)
 
 ## If You're Changing...
 
-- **Hemisphere profiles**: `hemisphere.rs` — system prompts, allowed modes, tool restrictions
-- **Integration logic**: `callosum.rs` — share/gate/escalate operations
-- **Config/env vars**: `config.rs` — MindConfig, HemisphereConfig
-- **Memory model**: `memory.rs` + `consolidation.rs` — ring buffer, consolidation
-- **Used by**: `x402-node` creates Mind instead of Soul when `MIND_ENABLED=true`
+- **Loop timing**: `config.rs` — interval, consolidation frequency
+- **Maintenance operations**: `subconscious.rs` — decay, promotion, belief decay, consolidation
+- **Used by**: `x402-node` creates Mind with `soul_db.clone()` and spawns it after the soul

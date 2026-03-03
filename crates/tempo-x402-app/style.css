@@ -1006,6 +1006,28 @@ a.node-address:hover { text-decoration: underline; }
     color: var(--success);
 }
 
+.soul-streak {
+    font-size: 0.75rem;
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    color: var(--text-dim);
+    margin-top: var(--sp-2);
+    text-align: center;
+}
+.soul-streak--active {
+    background: var(--success-bg);
+    color: var(--success);
+}
+.soul-streak--warn {
+    background: var(--warning-bg);
+    color: var(--warning);
+}
+.soul-streak--danger {
+    background: var(--error-bg);
+    color: var(--error);
+}
+
 .soul-muted {
     color: var(--text-muted);
     font-size: 0.9rem;
@@ -1092,6 +1114,16 @@ a.node-address:hover { text-decoration: underline; }
 .thought-badge--memory_consolidation {
     background: rgba(100, 116, 139, 0.15);
     color: var(--text-muted);
+}
+
+.thought-badge--tool_execution {
+    background: rgba(139, 92, 246, 0.15);
+    color: #8b5cf6;
+}
+
+.thought-badge--prediction {
+    background: rgba(236, 72, 153, 0.15);
+    color: #ec4899;
 }
 
 .thought-content {

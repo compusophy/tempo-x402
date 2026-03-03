@@ -33,8 +33,6 @@ pub struct NodeState {
     pub soul_config: Option<SoulConfig>,
     /// Soul observer for chat handler (None if soul init failed)
     pub soul_observer: Option<Arc<dyn NodeObserver>>,
-    /// Whether the mind (dual-soul) is active
+    /// Whether the mind (subconscious loop) is active
     pub mind_enabled: bool,
-    /// Right hemisphere's database (None if mind disabled or init failed)
-    pub mind_right_db: Option<Arc<SoulDatabase>>,
 }

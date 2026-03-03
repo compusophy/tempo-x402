@@ -125,6 +125,23 @@ async fn e2e_clone_flow() {
             "instance_id mismatch"
         );
         println!("        Clone status: {}", status_result["status"]);
+
+        // ── Step 4: Cleanup — DELETE /clone/{id}?force=true ──────────────
+        println!("\nStep 4: DELETE /clone/{instance_id}?force=true (cleanup)");
+        let resp = http
+            .delete(format!("{gateway_url}/clone/{instance_id}?force=true"))
+            .send()
+            .await
+            .expect("delete clone request failed");
+
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        println!("        Status: {status}");
+        println!("        Body: {body}");
+        assert!(
+            status == 200 || status == 404,
+            "Clone cleanup failed with {status}: {body}"
+        );
     } else if status == 409 {
         println!("        Clone limit reached (expected if already at max)");
     } else {

@@ -76,6 +76,12 @@ impl ToolExecutor {
         self
     }
 
+    /// Attach the soul database (needed for update_beliefs in all modes).
+    pub fn with_database(mut self, db: Arc<SoulDatabase>) -> Self {
+        self.db = Some(db);
+        self
+    }
+
     /// Enable coding capabilities with git context and database.
     pub fn with_coding(mut self, git: Arc<GitContext>, db: Arc<SoulDatabase>) -> Self {
         self.git = Some(git);
@@ -208,6 +214,13 @@ impl ToolExecutor {
                     .ok_or_else(|| "missing 'content' argument".to_string())?;
                 self.update_memory(content).await
             }
+            "check_self" => {
+                let endpoint = args
+                    .get("endpoint")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'endpoint' argument".to_string())?;
+                self.check_self(endpoint).await
+            }
             "register_endpoint" => {
                 let slug = args
                     .get("slug")
@@ -224,6 +237,13 @@ impl ToolExecutor {
                 let description = args.get("description").and_then(|v| v.as_str());
                 self.register_endpoint(slug, target_url, price, description)
                     .await
+            }
+            "update_beliefs" => {
+                let updates = args
+                    .get("updates")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "missing 'updates' argument (must be array)".to_string())?;
+                self.update_beliefs(updates).await
             }
             _ => {
                 // Check meta-tools and dynamic tools via registry
@@ -808,6 +828,71 @@ impl ToolExecutor {
         }
     }
 
+    /// Check the node's own endpoints for self-introspection.
+    /// Whitelisted to: health, analytics, analytics/{slug}, soul/status.
+    async fn check_self(&self, endpoint: &str) -> Result<ToolResult, String> {
+        let start = std::time::Instant::now();
+
+        // Whitelist check: only allow safe read-only endpoints
+        let trimmed = endpoint.trim_start_matches('/');
+        let allowed = trimmed == "health"
+            || trimmed == "analytics"
+            || trimmed == "soul/status"
+            || trimmed.starts_with("analytics/");
+
+        if !allowed {
+            return Err(format!(
+                "endpoint '/{trimmed}' not allowed. Use: health, analytics, analytics/{{slug}}, soul/status"
+            ));
+        }
+
+        let gateway_url = self
+            .gateway_url
+            .as_deref()
+            .unwrap_or("http://localhost:4023");
+
+        let url = format!("{gateway_url}/{trimmed}");
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let duration_ms = start.elapsed().as_millis() as u64;
+
+                // Truncate body if huge
+                let body_truncated = if body.len() > MAX_OUTPUT_BYTES {
+                    format!(
+                        "{}\n... (truncated)",
+                        body.chars().take(MAX_OUTPUT_BYTES).collect::<String>()
+                    )
+                } else {
+                    body
+                };
+
+                Ok(ToolResult {
+                    stdout: body_truncated,
+                    stderr: String::new(),
+                    exit_code: status.as_u16() as i32,
+                    duration_ms,
+                })
+            }
+            Err(e) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                Ok(ToolResult {
+                    stdout: String::new(),
+                    stderr: format!("request failed: {e}"),
+                    exit_code: -1,
+                    duration_ms,
+                })
+            }
+        }
+    }
+
     /// Create an issue on the upstream repo.
     async fn create_issue(
         &self,
@@ -836,6 +921,102 @@ impl ToolExecutor {
             duration_ms,
         })
     }
+
+    /// Execute belief updates via the world model.
+    async fn update_beliefs(&self, updates: &[serde_json::Value]) -> Result<ToolResult, String> {
+        use crate::world_model::{Belief, BeliefDomain, Confidence, ModelUpdate};
+
+        let start = std::time::Instant::now();
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| "soul database not available".to_string())?;
+
+        let now = chrono::Utc::now().timestamp();
+        let mut applied = 0u32;
+        let mut errors = Vec::new();
+
+        for (i, update_val) in updates.iter().enumerate() {
+            let update: ModelUpdate = match serde_json::from_value(update_val.clone()) {
+                Ok(u) => u,
+                Err(e) => {
+                    errors.push(format!("update[{i}]: invalid format: {e}"));
+                    continue;
+                }
+            };
+
+            let result = match &update {
+                ModelUpdate::Create {
+                    domain,
+                    subject,
+                    predicate,
+                    value,
+                    evidence,
+                } => {
+                    let domain = BeliefDomain::parse(domain).unwrap_or(BeliefDomain::Node);
+                    let belief = Belief {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        domain,
+                        subject: subject.clone(),
+                        predicate: predicate.clone(),
+                        value: value.clone(),
+                        confidence: Confidence::Medium,
+                        evidence: evidence.clone(),
+                        confirmation_count: 1,
+                        created_at: now,
+                        updated_at: now,
+                        active: true,
+                    };
+                    db.upsert_belief(&belief).map(|_| true)
+                }
+                ModelUpdate::Update {
+                    id,
+                    value,
+                    evidence,
+                } => {
+                    let beliefs = db.get_all_active_beliefs().map_err(|e| format!("{e}"))?;
+                    if let Some(existing) = beliefs.iter().find(|b| b.id == *id) {
+                        let updated = Belief {
+                            value: value.clone(),
+                            evidence: if evidence.is_empty() {
+                                existing.evidence.clone()
+                            } else {
+                                evidence.clone()
+                            },
+                            updated_at: now,
+                            ..existing.clone()
+                        };
+                        db.upsert_belief(&updated).map(|_| true)
+                    } else {
+                        Ok(false)
+                    }
+                }
+                ModelUpdate::Confirm { id } => db.confirm_belief(id),
+                ModelUpdate::Invalidate { id, reason } => db.invalidate_belief(id, reason),
+            };
+
+            match result {
+                Ok(true) => applied += 1,
+                Ok(false) => errors.push(format!("update[{i}]: no effect (belief not found)")),
+                Err(e) => errors.push(format!("update[{i}]: {e}")),
+            }
+        }
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let stdout = format!("Applied {applied}/{} belief updates", updates.len());
+        let stderr = if errors.is_empty() {
+            String::new()
+        } else {
+            errors.join("\n")
+        };
+
+        Ok(ToolResult {
+            stdout,
+            stderr,
+            exit_code: if errors.is_empty() { 0 } else { 1 },
+            duration_ms,
+        })
+    }
 }
 
 /// Return the update_memory tool declaration (available in Observe, Chat, Code).
@@ -852,6 +1033,85 @@ pub fn update_memory_tool() -> FunctionDeclaration {
                 }
             },
             "required": ["content"]
+        }),
+    }
+}
+
+/// Return the check_self tool declaration (Observe + Chat + Code modes).
+pub fn check_self_tool() -> FunctionDeclaration {
+    FunctionDeclaration {
+        name: "check_self".to_string(),
+        description: "Check your own node's endpoints for self-introspection. Whitelisted endpoints: health, analytics, analytics/{slug}, soul/status. Returns the HTTP response body and status code.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "endpoint": {
+                    "type": "string",
+                    "description": "The endpoint path to check (e.g. 'health', 'analytics', 'analytics/weather', 'soul/status')"
+                }
+            },
+            "required": ["endpoint"]
+        }),
+    }
+}
+
+/// Return the update_beliefs tool declaration (Observe + Chat + Code modes).
+pub fn update_beliefs_tool() -> FunctionDeclaration {
+    FunctionDeclaration {
+        name: "update_beliefs".to_string(),
+        description: "Update your world model with structured beliefs. Each update is one of: \
+            create (new belief), update (change value), confirm (verify still true), \
+            invalidate (mark as wrong). Use this to record what you know, not just what you see."
+            .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "updates": {
+                    "type": "array",
+                    "description": "Array of belief updates to apply",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": ["create", "update", "confirm", "invalidate"],
+                                "description": "Operation type"
+                            },
+                            "domain": {
+                                "type": "string",
+                                "enum": ["node", "endpoints", "codebase", "strategy", "self"],
+                                "description": "Belief domain (required for create)"
+                            },
+                            "subject": {
+                                "type": "string",
+                                "description": "What the belief is about (required for create)"
+                            },
+                            "predicate": {
+                                "type": "string",
+                                "description": "What aspect (required for create)"
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "The belief value (required for create and update)"
+                            },
+                            "evidence": {
+                                "type": "string",
+                                "description": "Why you believe this"
+                            },
+                            "id": {
+                                "type": "string",
+                                "description": "Belief ID (required for update, confirm, invalidate)"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Why invalidating (required for invalidate)"
+                            }
+                        },
+                        "required": ["op"]
+                    }
+                }
+            },
+            "required": ["updates"]
         }),
     }
 }

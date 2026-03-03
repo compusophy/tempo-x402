@@ -1126,7 +1126,7 @@ fn format_timestamp(unix_ts: i64) -> String {
     format!("{:02}:{:02}", h, m)
 }
 
-/// Mind status panel — dual-hemisphere display
+/// Mind status panel — subconscious background loop stats
 #[component]
 fn MindPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
     view! {
@@ -1137,81 +1137,40 @@ fn MindPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
                     None => return view! { <span></span> }.into_view(),
                 };
 
-                let left = data.get("left").cloned();
-                let right = data.get("right").cloned();
+                let enabled = data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !enabled {
+                    return view! { <span></span> }.into_view();
+                }
 
-                let render_hemisphere = |hemi: Option<serde_json::Value>, side: &str| {
-                    let data = hemi.unwrap_or_default();
-                    let active = data.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let cycles = data.get("total_cycles").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let last_think = data.get("last_think_at")
-                        .and_then(|v| v.as_i64())
-                        .map(format_relative_time)
-                        .unwrap_or_else(|| "never".to_string());
-                    let last_thought = data.get("recent_thoughts")
-                        .and_then(|v| v.as_array())
-                        .and_then(|arr| arr.first())
-                        .and_then(|t| t.get("content"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let truncated = if last_thought.len() > 100 {
-                        format!("{}...", &last_thought[..100])
-                    } else {
-                        last_thought
-                    };
+                let cycles = data.get("total_cycles").and_then(|v| v.as_u64()).unwrap_or(0);
+                let last_cycle = data.get("last_cycle_at")
+                    .and_then(|v| v.as_i64())
+                    .map(format_relative_time)
+                    .unwrap_or_else(|| "never".to_string());
+                let last_consolidation = data.get("last_consolidation_at")
+                    .and_then(|v| v.as_i64())
+                    .map(format_relative_time)
+                    .unwrap_or_else(|| "never".to_string());
 
-                    let (badge_class, badge_text) = if active {
-                        ("soul-status--green", "Active")
-                    } else {
-                        ("soul-status--gray", "Inactive")
-                    };
-
-                    let hemisphere_class = format!("mind-hemisphere mind-hemisphere--{}", side);
-                    let title_class = format!("hemisphere-title hemisphere-title--{}", side);
-                    let label = if side == "left" { "Left (Analytical)" } else { "Right (Holistic)" };
-
-                    view! {
-                        <div class=hemisphere_class>
-                            <div class="hemisphere-header">
-                                <span class=title_class>{label}</span>
-                                <span class={format!("soul-status-badge {}", badge_class)}>
-                                    {badge_text}
-                                </span>
-                            </div>
+                view! {
+                    <div class="mind-card">
+                        <div class="mind-header">
+                            <h2>"Subconscious"</h2>
+                            <span class="soul-status-badge soul-status--green">"Active"</span>
+                        </div>
+                        <div class="mind-stats">
                             <div class="hemisphere-stat">
                                 <span class="hemisphere-stat-label">"Cycles"</span>
                                 <span class="hemisphere-stat-value">{cycles.to_string()}</span>
                             </div>
                             <div class="hemisphere-stat">
-                                <span class="hemisphere-stat-label">"Last thought"</span>
-                                <span class="hemisphere-stat-value">{last_think}</span>
+                                <span class="hemisphere-stat-label">"Last cycle"</span>
+                                <span class="hemisphere-stat-value">{last_cycle}</span>
                             </div>
-                            {if !truncated.is_empty() {
-                                Some(view! {
-                                    <div class="hemisphere-thought">{truncated}</div>
-                                })
-                            } else {
-                                None
-                            }}
-                        </div>
-                    }
-                };
-
-                view! {
-                    <div class="mind-card">
-                        <div class="mind-header">
-                            <h2>"Mind"</h2>
-                            <span class="soul-status-badge soul-status--green">"Enabled"</span>
-                        </div>
-                        <div class="mind-hemispheres">
-                            {render_hemisphere(left, "left")}
-                            <div class="mind-callosum">
-                                <div class="callosum-line"></div>
-                                <span class="callosum-label">"Callosum"</span>
-                                <div class="callosum-line"></div>
+                            <div class="hemisphere-stat">
+                                <span class="hemisphere-stat-label">"Last consolidation"</span>
+                                <span class="hemisphere-stat-value">{last_consolidation}</span>
                             </div>
-                            {render_hemisphere(right, "right")}
                         </div>
                     </div>
                 }.into_view()
@@ -1258,6 +1217,25 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
 
                 let tools_enabled = data.get("tools_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
                 let coding_enabled = data.get("coding_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                // Cycle health metrics
+                let cycle_health = data.get("cycle_health");
+                let boring_streak = cycle_health
+                    .and_then(|h| h.get("boring_streak"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let active_streak = cycle_health
+                    .and_then(|h| h.get("active_streak"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let total_code_entries = cycle_health
+                    .and_then(|h| h.get("total_code_entries"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let last_decisions = cycle_health
+                    .and_then(|h| h.get("last_cycle_decisions"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
 
                 let (badge_class, badge_label) = if !active {
                     ("soul-status--gray", "Inactive")
@@ -1309,10 +1287,37 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
                                 <span class="stat-value">{last_thought_str}</span>
                             </div>
                             <div class="stat-card">
-                                <span class="stat-label">"Mode"</span>
-                                <span class="stat-value">{mode.clone()}</span>
+                                <span class="stat-label">"Code Entries"</span>
+                                <span class="stat-value">{total_code_entries.to_string()}</span>
                             </div>
                         </div>
+
+                        // Cycle health bar
+                        {if active && !dormant {
+                            let streak_class = if boring_streak >= 5 {
+                                "soul-streak soul-streak--danger"
+                            } else if boring_streak >= 3 {
+                                "soul-streak soul-streak--warn"
+                            } else if active_streak >= 2 {
+                                "soul-streak soul-streak--active"
+                            } else {
+                                "soul-streak"
+                            };
+                            let streak_label = if boring_streak >= 3 {
+                                format!("idle x{} (no decisions)", boring_streak)
+                            } else if active_streak >= 2 {
+                                format!("active x{} ({} decisions last cycle)", active_streak, last_decisions)
+                            } else {
+                                format!("mode: {}", mode)
+                            };
+                            Some(view! {
+                                <div class={streak_class}>
+                                    {streak_label}
+                                </div>
+                            })
+                        } else {
+                            None
+                        }}
 
                         // Feature flags
                         {if active {
@@ -1362,6 +1367,8 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
                                             "decision" => "decide",
                                             "reflection" => "reflect",
                                             "mutation" => "mutate",
+                                            "tool_execution" => "tool",
+                                            "prediction" => "pred",
                                             "cross_hemisphere" => "cross",
                                             "escalation" => "escalate",
                                             "memory_consolidation" => "memory",

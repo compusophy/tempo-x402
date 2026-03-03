@@ -197,10 +197,21 @@ pub async fn clone_status(
     }
 }
 
-/// DELETE /clone/{instance_id} — delete a failed clone
+/// Query parameter for force-delete.
+#[derive(serde::Deserialize, Default)]
+pub struct DeleteCloneQuery {
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// DELETE /clone/{instance_id} — delete a clone
+///
+/// By default, only deletes clones with status "failed".
+/// Pass `?force=true` to delete a clone in any status (also tears down the Railway service).
 pub async fn delete_clone(
     req: HttpRequest,
     path: web::Path<String>,
+    query: web::Query<DeleteCloneQuery>,
     node: web::Data<NodeState>,
 ) -> Result<HttpResponse, GatewayError> {
     if !check_admin_auth(&req) {
@@ -209,6 +220,7 @@ pub async fn delete_clone(
         })));
     }
     let instance_id = path.into_inner();
+    let force = query.force;
 
     if !is_valid_uuid(&instance_id) {
         return Ok(HttpResponse::BadRequest().json(serde_json::json!({
@@ -230,10 +242,10 @@ pub async fn delete_clone(
         }
     };
 
-    // Only allow deleting failed clones
-    if child.status != "failed" {
+    // Without force, only allow deleting failed clones
+    if !force && child.status != "failed" {
         return Ok(HttpResponse::Conflict().json(serde_json::json!({
-            "error": "can only delete failed clones",
+            "error": "can only delete failed clones (use ?force=true to override)",
             "current_status": child.status,
         })));
     }
@@ -253,20 +265,23 @@ pub async fn delete_clone(
     }
 
     // Delete from DB
-    match db::delete_failed_child(&node.gateway.db, &instance_id) {
+    let delete_result = if force {
+        db::delete_child(&node.gateway.db, &instance_id)
+    } else {
+        db::delete_failed_child(&node.gateway.db, &instance_id)
+    };
+
+    match delete_result {
         Ok(true) => {
-            tracing::info!(instance_id = %instance_id, "Deleted failed clone");
+            tracing::info!(instance_id = %instance_id, force = force, "Deleted clone");
             Ok(HttpResponse::Ok().json(serde_json::json!({
                 "success": true,
                 "instance_id": instance_id,
             })))
         }
-        Ok(false) => {
-            // Race: status changed between check and delete
-            Ok(HttpResponse::Conflict().json(serde_json::json!({
-                "error": "clone is no longer in failed state",
-            })))
-        }
+        Ok(false) => Ok(HttpResponse::Conflict().json(serde_json::json!({
+            "error": "clone is no longer in expected state",
+        }))),
         Err(e) => {
             tracing::error!(error = %e, "Failed to delete clone from DB");
             Err(GatewayError::Internal("failed to delete clone".to_string()))

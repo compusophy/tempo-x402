@@ -349,53 +349,11 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    // ── Mind / Soul init (before NodeState so we can store the DB ref) ─
+    // ── Soul init (before NodeState so we can store the DB ref) ────────
     let mind_enabled = x402_mind::MindConfig::is_enabled();
+    let mind_config = x402_mind::MindConfig::from_env();
 
-    // Either a Mind (dual-soul) or a single Soul
-    enum SoulOrMind {
-        Soul(Box<x402_soul::Soul>),
-        Mind(Box<x402_mind::Mind>),
-    }
-
-    let (
-        soul_db,
-        soul_dormant,
-        soul_or_mind,
-        soul_generation,
-        soul_config_for_state,
-        mind_right_db,
-    ) = if mind_enabled {
-        match x402_mind::MindConfig::from_env() {
-            Ok(mind_config) => {
-                let dormant = mind_config.left.soul_config.llm_api_key.is_none();
-                let generation = mind_config.left.soul_config.generation;
-                let config_clone = mind_config.left.soul_config.clone();
-                match x402_mind::Mind::new(mind_config) {
-                    Ok(mind) => {
-                        let db = mind.database().clone();
-                        let right_db = mind.right_database().clone();
-                        (
-                            Some(db),
-                            dormant,
-                            Some(SoulOrMind::Mind(Box::new(mind))),
-                            generation,
-                            Some(config_clone),
-                            Some(right_db),
-                        )
-                    }
-                    Err(e) => {
-                        tracing::warn!("Mind init failed (non-fatal): {e}");
-                        (None, true, None, generation, None, None)
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Mind config failed (non-fatal): {e}");
-                (None, true, None, 0, None, None)
-            }
-        }
-    } else {
+    let (soul_db, soul_dormant, soul, soul_generation, soul_config_for_state) =
         match x402_soul::SoulConfig::from_env() {
             Ok(soul_config) => {
                 let dormant = soul_config.llm_api_key.is_none();
@@ -407,31 +365,29 @@ async fn main() -> std::io::Result<()> {
                         (
                             Some(db),
                             dormant,
-                            Some(SoulOrMind::Soul(Box::new(soul))),
+                            Some(soul),
                             generation,
                             Some(config_clone),
-                            None,
                         )
                     }
                     Err(e) => {
                         tracing::warn!("Soul init failed (non-fatal): {e}");
-                        (None, true, None, generation, None, None)
+                        (None, true, None, generation, None)
                     }
                 }
             }
             Err(e) => {
                 tracing::warn!("Soul config failed (non-fatal): {e}");
-                (None, true, None, 0, None, None)
+                (None, true, None, 0, None)
             }
-        }
-    };
+        };
 
     // ── Node state ──────────────────────────────────────────────────────
     let started_at = chrono::Utc::now();
 
     // Build observer early so we can share it between NodeState and soul spawn
     let soul_observer: Option<std::sync::Arc<dyn x402_soul::NodeObserver>> =
-        if soul_or_mind.is_some() || soul_config_for_state.is_some() {
+        if soul.is_some() || soul_config_for_state.is_some() {
             Some(soul_observer::NodeObserverImpl::new(
                 gateway_state.clone(),
                 identity.clone(),
@@ -457,34 +413,30 @@ async fn main() -> std::io::Result<()> {
         soul_config: soul_config_for_state,
         soul_observer: soul_observer.clone(),
         mind_enabled,
-        mind_right_db,
     };
 
     let node_data = web::Data::new(node_state.clone());
     let gateway_data = web::Data::new(node_state.gateway.clone());
     let facilitator_data = facilitator_state.map(web::Data::from);
 
-    // ── Soul/Mind spawn (after NodeState so we can build the observer) ─
-    if let Some(soul_or_mind) = soul_or_mind {
+    // ── Soul spawn ────────────────────────────────────────────────────
+    if let Some(soul) = soul {
         if let Some(observer) = soul_observer {
-            match soul_or_mind {
-                SoulOrMind::Mind(mind) => {
-                    (*mind).spawn(observer);
-                    tracing::info!(
-                        dormant = node_state.soul_dormant,
-                        generation = soul_generation,
-                        "Mind spawned (dual-soul: left + right + callosum)"
-                    );
-                }
-                SoulOrMind::Soul(soul) => {
-                    (*soul).spawn(observer);
-                    tracing::info!(
-                        dormant = node_state.soul_dormant,
-                        generation = soul_generation,
-                        "Soul spawned"
-                    );
-                }
-            }
+            soul.spawn(observer);
+            tracing::info!(
+                dormant = node_state.soul_dormant,
+                generation = soul_generation,
+                "Soul spawned"
+            );
+        }
+    }
+
+    // ── Mind spawn (subconscious background loop) ───────────────────
+    if mind_enabled {
+        if let Some(ref db) = node_state.soul_db {
+            let mind = x402_mind::Mind::new(db.clone(), mind_config);
+            mind.spawn();
+            tracing::info!("Mind spawned (subconscious background loop)");
         }
     }
 

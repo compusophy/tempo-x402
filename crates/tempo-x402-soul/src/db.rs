@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SoulError;
 use crate::memory::{Thought, ThoughtType};
+use crate::world_model::{Belief, BeliefDomain, Confidence};
 
 /// A dynamically registered tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +133,29 @@ impl SoulDatabase {
             )?;
 
             conn.execute_batch("PRAGMA user_version = 1;")?;
+        }
+
+        if version < 2 {
+            // v2: world model beliefs table
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS beliefs (
+                    id TEXT PRIMARY KEY,
+                    domain TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    confidence TEXT NOT NULL DEFAULT 'medium',
+                    evidence TEXT NOT NULL DEFAULT '',
+                    confirmation_count INTEGER NOT NULL DEFAULT 1,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_beliefs_unique
+                    ON beliefs(domain, subject, predicate) WHERE active = 1;
+                CREATE INDEX IF NOT EXISTS idx_beliefs_domain ON beliefs(domain);
+                PRAGMA user_version = 2;",
+            )?;
         }
 
         Ok(())
@@ -712,6 +736,172 @@ impl SoulDatabase {
             })?;
         Ok(count)
     }
+
+    // ── World Model beliefs ──────────────────────────────────────────────
+
+    /// Upsert a belief. On conflict (domain, subject, predicate) for active beliefs,
+    /// updates value, evidence, confidence, bumps confirmation_count, refreshes updated_at.
+    pub fn upsert_belief(&self, belief: &Belief) -> Result<(), SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+
+        conn.execute(
+            "INSERT INTO beliefs (id, domain, subject, predicate, value, confidence, evidence, confirmation_count, created_at, updated_at, active) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+             ON CONFLICT(domain, subject, predicate) WHERE active = 1 DO UPDATE SET \
+               value = ?5, confidence = ?6, evidence = ?7, \
+               confirmation_count = confirmation_count + 1, \
+               updated_at = ?10",
+            params![
+                belief.id,
+                belief.domain.as_str(),
+                belief.subject,
+                belief.predicate,
+                belief.value,
+                belief.confidence.as_str(),
+                belief.evidence,
+                belief.confirmation_count,
+                belief.created_at,
+                belief.updated_at,
+                belief.active as i32,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get all active beliefs for a domain.
+    pub fn get_beliefs_by_domain(&self, domain: &BeliefDomain) -> Result<Vec<Belief>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, domain, subject, predicate, value, confidence, evidence, \
+             confirmation_count, created_at, updated_at, active \
+             FROM beliefs WHERE domain = ?1 AND active = 1 ORDER BY subject, predicate",
+        )?;
+
+        let beliefs = stmt
+            .query_map(params![domain.as_str()], Self::row_to_belief)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(beliefs)
+    }
+
+    /// Get all active beliefs (full world model snapshot).
+    pub fn get_all_active_beliefs(&self) -> Result<Vec<Belief>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, domain, subject, predicate, value, confidence, evidence, \
+             confirmation_count, created_at, updated_at, active \
+             FROM beliefs WHERE active = 1 ORDER BY domain, subject, predicate",
+        )?;
+
+        let beliefs = stmt
+            .query_map([], Self::row_to_belief)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(beliefs)
+    }
+
+    /// Confirm a belief: bump confirmation_count, refresh updated_at, set confidence to High.
+    pub fn confirm_belief(&self, id: &str) -> Result<bool, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = conn.execute(
+            "UPDATE beliefs SET confirmation_count = confirmation_count + 1, \
+             updated_at = ?1, confidence = 'high' WHERE id = ?2 AND active = 1",
+            params![now, id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Invalidate a belief: set active=false, append reason to evidence.
+    pub fn invalidate_belief(&self, id: &str, reason: &str) -> Result<bool, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = conn.execute(
+            "UPDATE beliefs SET active = 0, updated_at = ?1, \
+             evidence = evidence || ' [invalidated: ' || ?2 || ']' \
+             WHERE id = ?3 AND active = 1",
+            params![now, reason, id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Decay unconfirmed beliefs based on cycles since last update.
+    /// Uses the cycle count stored in soul_state to determine staleness.
+    /// High → Medium after 5 cycles unconfirmed, Medium → Low after 10, Low → inactive after 20.
+    pub fn decay_beliefs(&self) -> Result<(u32, u32, u32), SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+
+        // Thresholds in seconds (approximation: 1 cycle ~ 300s = 5min)
+        let cycle_secs: i64 = 300;
+
+        // High → Medium: unconfirmed for 5 cycles (~25min)
+        let demoted_high = conn.execute(
+            "UPDATE beliefs SET confidence = 'medium' \
+             WHERE active = 1 AND confidence = 'high' AND (?1 - updated_at) > ?2",
+            params![now, cycle_secs * 5],
+        )? as u32;
+
+        // Medium → Low: unconfirmed for 10 cycles (~50min)
+        let demoted_medium = conn.execute(
+            "UPDATE beliefs SET confidence = 'low' \
+             WHERE active = 1 AND confidence = 'medium' AND (?1 - updated_at) > ?2",
+            params![now, cycle_secs * 10],
+        )? as u32;
+
+        // Low → inactive: unconfirmed for 20 cycles (~100min)
+        let deactivated = conn.execute(
+            "UPDATE beliefs SET active = 0 \
+             WHERE active = 1 AND confidence = 'low' AND (?1 - updated_at) > ?2",
+            params![now, cycle_secs * 20],
+        )? as u32;
+
+        Ok((demoted_high, demoted_medium, deactivated))
+    }
+
+    /// Helper: map a row to a Belief.
+    fn row_to_belief(row: &rusqlite::Row) -> Result<Belief, rusqlite::Error> {
+        let domain_str: String = row.get(1)?;
+        let confidence_str: String = row.get(5)?;
+        let active_int: i32 = row.get(10)?;
+        Ok(Belief {
+            id: row.get(0)?,
+            domain: BeliefDomain::parse(&domain_str).unwrap_or(BeliefDomain::Node),
+            subject: row.get(2)?,
+            predicate: row.get(3)?,
+            value: row.get(4)?,
+            confidence: Confidence::parse(&confidence_str),
+            evidence: row.get(6)?,
+            confirmation_count: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+            active: active_int != 0,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -948,5 +1138,188 @@ mod tests {
         db.store_prediction(r#"{"expected_payments":10}"#).unwrap();
         let pred = db.get_last_prediction().unwrap().unwrap();
         assert!(pred.contains("expected_payments"));
+    }
+
+    #[test]
+    fn test_upsert_and_get_beliefs() {
+        let db = SoulDatabase::new(":memory:").unwrap();
+
+        let belief = Belief {
+            id: "b1".to_string(),
+            domain: BeliefDomain::Endpoints,
+            subject: "echo".to_string(),
+            predicate: "payment_count".to_string(),
+            value: "0".to_string(),
+            confidence: Confidence::High,
+            evidence: "from snapshot".to_string(),
+            confirmation_count: 1,
+            created_at: 1000,
+            updated_at: 1000,
+            active: true,
+        };
+        db.upsert_belief(&belief).unwrap();
+
+        // Get by domain
+        let beliefs = db.get_beliefs_by_domain(&BeliefDomain::Endpoints).unwrap();
+        assert_eq!(beliefs.len(), 1);
+        assert_eq!(beliefs[0].value, "0");
+        assert_eq!(beliefs[0].confirmation_count, 1);
+
+        // Upsert same (domain, subject, predicate) — should update
+        let updated = Belief {
+            id: "b2".to_string(), // different id, but same key
+            value: "5".to_string(),
+            evidence: "new observation".to_string(),
+            updated_at: 2000,
+            ..belief.clone()
+        };
+        db.upsert_belief(&updated).unwrap();
+
+        let beliefs = db.get_beliefs_by_domain(&BeliefDomain::Endpoints).unwrap();
+        assert_eq!(beliefs.len(), 1);
+        assert_eq!(beliefs[0].value, "5");
+        assert_eq!(beliefs[0].confirmation_count, 2); // bumped
+    }
+
+    #[test]
+    fn test_get_all_active_beliefs() {
+        let db = SoulDatabase::new(":memory:").unwrap();
+
+        let b1 = Belief {
+            id: "b1".to_string(),
+            domain: BeliefDomain::Node,
+            subject: "self".to_string(),
+            predicate: "uptime".to_string(),
+            value: "10h".to_string(),
+            confidence: Confidence::High,
+            evidence: "".to_string(),
+            confirmation_count: 1,
+            created_at: 1000,
+            updated_at: 1000,
+            active: true,
+        };
+        let b2 = Belief {
+            id: "b2".to_string(),
+            domain: BeliefDomain::Endpoints,
+            subject: "echo".to_string(),
+            predicate: "count".to_string(),
+            value: "3".to_string(),
+            confidence: Confidence::Medium,
+            evidence: "".to_string(),
+            confirmation_count: 1,
+            created_at: 1000,
+            updated_at: 1000,
+            active: true,
+        };
+        db.upsert_belief(&b1).unwrap();
+        db.upsert_belief(&b2).unwrap();
+
+        let all = db.get_all_active_beliefs().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_confirm_belief() {
+        let db = SoulDatabase::new(":memory:").unwrap();
+
+        let belief = Belief {
+            id: "b1".to_string(),
+            domain: BeliefDomain::Node,
+            subject: "self".to_string(),
+            predicate: "healthy".to_string(),
+            value: "true".to_string(),
+            confidence: Confidence::Medium,
+            evidence: "".to_string(),
+            confirmation_count: 1,
+            created_at: 1000,
+            updated_at: 1000,
+            active: true,
+        };
+        db.upsert_belief(&belief).unwrap();
+
+        let confirmed = db.confirm_belief("b1").unwrap();
+        assert!(confirmed);
+
+        let beliefs = db.get_beliefs_by_domain(&BeliefDomain::Node).unwrap();
+        assert_eq!(beliefs[0].confidence, Confidence::High);
+        assert_eq!(beliefs[0].confirmation_count, 2);
+    }
+
+    #[test]
+    fn test_invalidate_belief() {
+        let db = SoulDatabase::new(":memory:").unwrap();
+
+        let belief = Belief {
+            id: "b1".to_string(),
+            domain: BeliefDomain::Endpoints,
+            subject: "old-ep".to_string(),
+            predicate: "exists".to_string(),
+            value: "true".to_string(),
+            confidence: Confidence::High,
+            evidence: "registered".to_string(),
+            confirmation_count: 1,
+            created_at: 1000,
+            updated_at: 1000,
+            active: true,
+        };
+        db.upsert_belief(&belief).unwrap();
+
+        let invalidated = db.invalidate_belief("b1", "endpoint removed").unwrap();
+        assert!(invalidated);
+
+        // Should no longer appear in active beliefs
+        let beliefs = db.get_beliefs_by_domain(&BeliefDomain::Endpoints).unwrap();
+        assert!(beliefs.is_empty());
+    }
+
+    #[test]
+    fn test_decay_beliefs() {
+        let db = SoulDatabase::new(":memory:").unwrap();
+
+        // Insert a belief that's just old enough for High→Medium (>1500s) but not Medium→Low (>3000s)
+        let slightly_old = chrono::Utc::now().timestamp() - 2000; // ~6.6 cycles
+        let belief = Belief {
+            id: "b1".to_string(),
+            domain: BeliefDomain::Strategy,
+            subject: "plan".to_string(),
+            predicate: "next_action".to_string(),
+            value: "do something".to_string(),
+            confidence: Confidence::High,
+            evidence: "".to_string(),
+            confirmation_count: 1,
+            created_at: slightly_old,
+            updated_at: slightly_old,
+            active: true,
+        };
+        db.upsert_belief(&belief).unwrap();
+
+        let (demoted_high, _, _) = db.decay_beliefs().unwrap();
+        assert!(demoted_high >= 1);
+
+        // Check it was demoted to Medium (not further, since only ~6.6 cycles old)
+        let beliefs = db.get_beliefs_by_domain(&BeliefDomain::Strategy).unwrap();
+        assert_eq!(beliefs.len(), 1);
+        assert_eq!(beliefs[0].confidence, Confidence::Medium);
+
+        // Insert a very old belief — should be fully deactivated
+        let very_old = chrono::Utc::now().timestamp() - 10_000;
+        let belief2 = Belief {
+            id: "b2".to_string(),
+            domain: BeliefDomain::Strategy,
+            subject: "old_plan".to_string(),
+            predicate: "status".to_string(),
+            value: "stale".to_string(),
+            confidence: Confidence::High,
+            evidence: "".to_string(),
+            confirmation_count: 1,
+            created_at: very_old,
+            updated_at: very_old,
+            active: true,
+        };
+        db.upsert_belief(&belief2).unwrap();
+
+        let (_, _, deactivated) = db.decay_beliefs().unwrap();
+        // The very old belief goes High→Medium→Low→inactive in one pass
+        assert!(deactivated >= 1);
     }
 }

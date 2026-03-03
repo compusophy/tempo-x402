@@ -32,4 +32,4 @@ Binary: `x402-node` on port 4023.
 - **Identity bootstrap**: `x402-identity` crate — node just calls `bootstrap()`
 - **Database schema**: `db.rs` — uses gateway's `execute_schema()` pattern
 - **Startup order**: `main.rs` — bootstrap must run before gateway config reads env vars; soul init must happen before NodeState
-- **Soul status**: `routes/soul.rs` — `GET /soul/status` queries `NodeState.soul_db`
+- **Soul status**: `routes/soul.rs` — `GET /soul/status` queries `NodeState.soul_db` (includes world model beliefs)

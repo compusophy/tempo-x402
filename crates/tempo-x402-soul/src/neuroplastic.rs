@@ -55,6 +55,81 @@ impl MemoryTier {
     }
 }
 
+/// Per-endpoint reward attribution: what changed and where.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewardBreakdown {
+    /// Total reward signal (0.0..=0.8).
+    pub total_reward: f64,
+    /// Endpoints that appeared since last snapshot.
+    pub new_endpoints: Vec<String>,
+    /// Endpoints that gained new payments since last snapshot.
+    pub growing_endpoints: Vec<String>,
+    /// Endpoints with zero payments (have never earned).
+    pub stagnant_endpoints: Vec<String>,
+}
+
+/// Compute per-endpoint reward signal by diffing two snapshots.
+///
+/// - New endpoint → +0.3 reward
+/// - Endpoint with new payments → +0.5 reward (split across all growing)
+/// - Endpoint with zero payments → stagnant (no reward, but tracked)
+/// - Total capped at 0.8
+pub fn compute_reward_signal(
+    snapshot: &NodeSnapshot,
+    prev_snapshot: Option<&NodeSnapshot>,
+) -> RewardBreakdown {
+    let mut breakdown = RewardBreakdown {
+        total_reward: 0.0,
+        new_endpoints: vec![],
+        growing_endpoints: vec![],
+        stagnant_endpoints: vec![],
+    };
+
+    let Some(prev) = prev_snapshot else {
+        // No previous snapshot — classify current endpoints but no reward
+        for ep in &snapshot.endpoints {
+            if ep.payment_count == 0 {
+                breakdown.stagnant_endpoints.push(ep.slug.clone());
+            }
+        }
+        return breakdown;
+    };
+
+    // Build lookup of previous endpoints by slug
+    let prev_map: std::collections::HashMap<&str, &crate::observer::EndpointSummary> = prev
+        .endpoints
+        .iter()
+        .map(|ep| (ep.slug.as_str(), ep))
+        .collect();
+
+    for ep in &snapshot.endpoints {
+        match prev_map.get(ep.slug.as_str()) {
+            None => {
+                // New endpoint
+                breakdown.new_endpoints.push(ep.slug.clone());
+            }
+            Some(prev_ep) => {
+                if ep.payment_count > prev_ep.payment_count {
+                    breakdown.growing_endpoints.push(ep.slug.clone());
+                } else if ep.payment_count == 0 {
+                    breakdown.stagnant_endpoints.push(ep.slug.clone());
+                }
+            }
+        }
+    }
+
+    // Score: new endpoints contribute 0.3 each (capped), growing contribute 0.5 total
+    let new_reward = (breakdown.new_endpoints.len() as f64 * 0.3).min(0.6);
+    let growing_reward = if breakdown.growing_endpoints.is_empty() {
+        0.0
+    } else {
+        0.5
+    };
+
+    breakdown.total_reward = (new_reward + growing_reward).min(0.8);
+    breakdown
+}
+
 /// Breakdown of salience factors for a thought.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SalienceFactors {
@@ -107,21 +182,9 @@ pub fn compute_salience(
     // Prediction error (already computed, pass through)
     let pred_error = prediction_error.clamp(0.0, 1.0);
 
-    // Reward signal: positive changes in payments/revenue
-    let reward = if let Some(prev) = prev_snapshot {
-        let mut r = 0.0;
-        if snapshot.total_payments > prev.total_payments {
-            r += 0.5;
-        }
-        let cur_rev: f64 = snapshot.total_revenue.parse().unwrap_or(0.0);
-        let prev_rev: f64 = prev.total_revenue.parse().unwrap_or(0.0);
-        if cur_rev > prev_rev {
-            r += 0.3;
-        }
-        r
-    } else {
-        0.0
-    };
+    // Reward signal: per-endpoint attribution
+    let reward_breakdown = compute_reward_signal(snapshot, prev_snapshot);
+    let reward = reward_breakdown.total_reward;
 
     // Recency: constant small boost
     let recency = 0.1;
@@ -152,7 +215,7 @@ pub fn compute_salience(
 pub fn initial_tier(thought_type: &ThoughtType, salience: f64) -> MemoryTier {
     match thought_type {
         ThoughtType::Observation => MemoryTier::Sensory,
-        ThoughtType::Reasoning | ThoughtType::Decision => {
+        ThoughtType::Reasoning | ThoughtType::Decision | ThoughtType::Reflection => {
             if salience > 0.7 {
                 MemoryTier::LongTerm
             } else {
@@ -330,8 +393,14 @@ mod tests {
 
     #[test]
     fn test_compute_salience_with_reward() {
-        let prev = test_snapshot(10, "100.0", 3, 0);
-        let snap = test_snapshot(15, "150.0", 3, 0);
+        let prev = NodeSnapshot {
+            endpoints: vec![test_endpoint("weather", 10, "100.0")],
+            ..test_snapshot(10, "100.0", 1, 0)
+        };
+        let snap = NodeSnapshot {
+            endpoints: vec![test_endpoint("weather", 15, "150.0")],
+            ..test_snapshot(15, "150.0", 1, 0)
+        };
         let (salience, factors) = compute_salience(
             &ThoughtType::Observation,
             "new observation",
@@ -419,5 +488,83 @@ mod tests {
         assert!((MemoryTier::Sensory.decay_rate() - 0.3).abs() < f64::EPSILON);
         assert!((MemoryTier::Working.decay_rate() - 0.95).abs() < f64::EPSILON);
         assert!((MemoryTier::LongTerm.decay_rate() - 0.995).abs() < f64::EPSILON);
+    }
+
+    fn test_endpoint(slug: &str, payments: i64, revenue: &str) -> crate::observer::EndpointSummary {
+        crate::observer::EndpointSummary {
+            slug: slug.to_string(),
+            price: "$0.01".to_string(),
+            description: None,
+            request_count: payments * 2,
+            payment_count: payments,
+            revenue: revenue.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_compute_reward_signal_no_prev() {
+        let snap = NodeSnapshot {
+            endpoints: vec![
+                test_endpoint("weather", 0, "0"),
+                test_endpoint("translate", 5, "0.05"),
+            ],
+            ..test_snapshot(5, "0.05", 2, 0)
+        };
+        let breakdown = compute_reward_signal(&snap, None);
+        assert!((breakdown.total_reward - 0.0).abs() < f64::EPSILON);
+        assert_eq!(breakdown.stagnant_endpoints, vec!["weather"]);
+    }
+
+    #[test]
+    fn test_compute_reward_signal_new_endpoint() {
+        let prev = NodeSnapshot {
+            endpoints: vec![test_endpoint("weather", 5, "0.05")],
+            ..test_snapshot(5, "0.05", 1, 0)
+        };
+        let snap = NodeSnapshot {
+            endpoints: vec![
+                test_endpoint("weather", 5, "0.05"),
+                test_endpoint("translate", 0, "0"),
+            ],
+            ..test_snapshot(5, "0.05", 2, 0)
+        };
+        let breakdown = compute_reward_signal(&snap, Some(&prev));
+        assert_eq!(breakdown.new_endpoints, vec!["translate"]);
+        assert!((breakdown.total_reward - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_reward_signal_growing_endpoint() {
+        let prev = NodeSnapshot {
+            endpoints: vec![test_endpoint("weather", 5, "0.05")],
+            ..test_snapshot(5, "0.05", 1, 0)
+        };
+        let snap = NodeSnapshot {
+            endpoints: vec![test_endpoint("weather", 10, "0.10")],
+            ..test_snapshot(10, "0.10", 1, 0)
+        };
+        let breakdown = compute_reward_signal(&snap, Some(&prev));
+        assert_eq!(breakdown.growing_endpoints, vec!["weather"]);
+        assert!((breakdown.total_reward - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_reward_signal_capped() {
+        let prev = NodeSnapshot {
+            endpoints: vec![],
+            ..test_snapshot(0, "0", 0, 0)
+        };
+        // 3 new endpoints (3 * 0.3 = 0.9 but capped at 0.6) + no growing = 0.6
+        let snap = NodeSnapshot {
+            endpoints: vec![
+                test_endpoint("a", 0, "0"),
+                test_endpoint("b", 0, "0"),
+                test_endpoint("c", 0, "0"),
+            ],
+            ..test_snapshot(0, "0", 3, 0)
+        };
+        let breakdown = compute_reward_signal(&snap, Some(&prev));
+        assert_eq!(breakdown.new_endpoints.len(), 3);
+        assert!(breakdown.total_reward <= 0.8);
     }
 }

@@ -21,7 +21,7 @@ impl AgentMode {
     /// Maximum tool calls allowed in this mode.
     pub fn max_tool_calls(&self) -> u32 {
         match self {
-            Self::Observe => 10,
+            Self::Observe => 20,
             Self::Chat => 15,
             Self::Code => 50,
             Self::Review => 10,
@@ -44,7 +44,7 @@ impl AgentMode {
 
         let mut result = match self {
             Self::Observe => {
-                // Shell + read-only file tools + update_memory
+                // Shell + read-only file tools + update_memory + update_beliefs + check_self
                 let mut v: Vec<_> = all
                     .into_iter()
                     .filter(|t| {
@@ -55,10 +55,12 @@ impl AgentMode {
                     })
                     .collect();
                 v.push(tools::update_memory_tool());
+                v.push(tools::update_beliefs_tool());
+                v.push(tools::check_self_tool());
                 v
             }
             Self::Chat => {
-                // Shell + read-only file tools + update_memory
+                // Shell + read-only file tools + update_memory + update_beliefs + check_self
                 let mut v: Vec<_> = all
                     .into_iter()
                     .filter(|t| {
@@ -69,13 +71,17 @@ impl AgentMode {
                     })
                     .collect();
                 v.push(tools::update_memory_tool());
+                v.push(tools::update_beliefs_tool());
+                v.push(tools::check_self_tool());
                 v
             }
             Self::Code => {
-                // All tools including write/edit/commit + update_memory + register_endpoint
+                // All tools including write/edit/commit + update_memory + update_beliefs + register_endpoint + check_self
                 let mut v = all_with_git;
                 v.push(tools::update_memory_tool());
+                v.push(tools::update_beliefs_tool());
                 v.push(tools::register_endpoint_tool());
+                v.push(tools::check_self_tool());
                 v
             }
             Self::Review => {
