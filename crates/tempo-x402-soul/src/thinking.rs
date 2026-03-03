@@ -202,7 +202,8 @@ impl ThinkingLoop {
         let mut tool_executor =
             ToolExecutor::new(config.tool_timeout_secs, config.workspace_root.clone())
                 .with_memory_file(config.memory_file_path.clone())
-                .with_gateway_url(config.gateway_url.clone());
+                .with_gateway_url(config.gateway_url.clone())
+                .with_database(db.clone());
 
         // Set up coding if enabled and instance_id is available
         if config.coding_enabled {

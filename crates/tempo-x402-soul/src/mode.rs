@@ -21,7 +21,7 @@ impl AgentMode {
     /// Maximum tool calls allowed in this mode.
     pub fn max_tool_calls(&self) -> u32 {
         match self {
-            Self::Observe => 10,
+            Self::Observe => 20,
             Self::Chat => 15,
             Self::Code => 50,
             Self::Review => 10,

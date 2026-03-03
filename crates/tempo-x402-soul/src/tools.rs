@@ -76,6 +76,12 @@ impl ToolExecutor {
         self
     }
 
+    /// Attach the soul database (needed for update_beliefs in all modes).
+    pub fn with_database(mut self, db: Arc<SoulDatabase>) -> Self {
+        self.db = Some(db);
+        self
+    }
+
     /// Enable coding capabilities with git context and database.
     pub fn with_coding(mut self, git: Arc<GitContext>, db: Arc<SoulDatabase>) -> Self {
         self.git = Some(git);
