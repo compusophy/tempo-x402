@@ -1,3 +1,4 @@
+// Generation 0: Restoring utility suite and Mind architecture
 //! x402-node: self-deploying x402 node with identity bootstrap + clone orchestration.
 //!
 //! Composes the x402-gateway (API proxy) with identity bootstrap and Railway
