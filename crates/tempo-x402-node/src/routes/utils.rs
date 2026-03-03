@@ -587,13 +587,16 @@ pub async fn tx_builder(
         Err(_) => None,
     };
 
-    let tx_req = alloy::rpc::types::TransactionRequest::default()
+    let mut tx_req = alloy::rpc::types::TransactionRequest::default()
         .from(from)
         .to(Some(to))
         .input(alloy::rpc::types::TransactionInput::new(data.clone().into()))
-        .value(value)
         .nonce(nonce)
         .gas_price(gas_price);
+
+    if let Some(v) = value {
+        tx_req = tx_req.value(v);
+    }
 
     let gas_limit = match provider.estimate_gas(tx_req).await {
         Ok(g) => g,
