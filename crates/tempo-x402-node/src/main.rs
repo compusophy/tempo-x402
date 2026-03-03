@@ -304,6 +304,13 @@ async fn main() -> std::io::Result<()> {
                 "Orchestrates ABI encoding, nonce retrieval, and gas estimation into a single call. Returns a complete transaction object ready for signing.".to_string(),
             ),
             (
+                "unit-converter".to_string(),
+                format!("{}/utils/unit-converter", self_url),
+                "$0.0001".to_string(),
+                "100".to_string(),
+                "Converts between Wei, Gwei, and Ether units.".to_string(),
+            ),
+            (
                 "info".to_string(),
                 format!("{}/instance/info", self_url),
                 "$0.0001".to_string(),
