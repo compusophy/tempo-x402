@@ -1,6 +1,6 @@
 [package]
 name = "tempo-x402-security-audit"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 publish = false
 description = "Security invariant tests for the tempo-x402 payment gateway"

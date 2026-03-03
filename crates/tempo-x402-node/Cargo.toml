@@ -1,6 +1,6 @@
 [package]
 name = "tempo-x402-node"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 description = "Self-deploying x402 node: gateway + identity bootstrap + clone orchestration"
 license = "MIT"

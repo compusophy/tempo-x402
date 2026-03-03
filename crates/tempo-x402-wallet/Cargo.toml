@@ -1,6 +1,6 @@
 [package]
 name = "tempo-x402-wallet"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 description = "WASM-compatible wallet for x402 payments: key generation, EIP-712 signing, payment payloads"
 license = "MIT"
