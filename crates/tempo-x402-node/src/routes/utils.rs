@@ -222,9 +222,9 @@ pub async fn get_balance(
         data.extend_from_slice(&[0u8; 12]);
         data.extend_from_slice(address.as_slice());
 
-        let tx = alloy::rpc::types::TransactionRequest::default()
-            .to(token_address)
-            .input(data.into());
+        let mut tx = alloy::rpc::types::TransactionRequest::default();
+        tx.to = Some(token_address);
+        tx.input.input = Some(data.into());
 
         match provider.call(tx).await {
             Ok(bytes) => {
@@ -356,9 +356,9 @@ pub async fn get_allowance(
     data.extend_from_slice(&[0u8; 12]);
     data.extend_from_slice(spender.as_slice());
 
-    let tx = alloy::rpc::types::TransactionRequest::default()
-        .to(token)
-        .input(data.into());
+    let mut tx = alloy::rpc::types::TransactionRequest::default();
+    tx.to = Some(token);
+    tx.input.input = Some(data.into());
 
     match provider.call(tx).await {
         Ok(bytes) => {
@@ -411,9 +411,9 @@ pub async fn eth_call(
         }
     };
 
-    let tx = alloy::rpc::types::TransactionRequest::default()
-        .to(to)
-        .input(data.into());
+    let mut tx = alloy::rpc::types::TransactionRequest::default();
+    tx.to = Some(to);
+    tx.input.input = Some(data.into());
 
     match provider.call(tx).await {
         Ok(bytes) => HttpResponse::Ok().json(serde_json::json!({ "result": alloy::hex::encode(bytes) })),
@@ -587,12 +587,12 @@ pub async fn tx_builder(
         Err(_) => None,
     };
 
-    let mut tx_req = alloy::rpc::types::TransactionRequest::default()
-        .from(from)
-        .to(to)
-        .input(data.clone().into())
-        .nonce(nonce)
-        .gas_price(gas_price);
+    let mut tx_req = alloy::rpc::types::TransactionRequest::default();
+    tx_req.from = Some(from);
+    tx_req.to = Some(to);
+    tx_req.input.input = Some(data.clone().into());
+    tx_req.nonce = Some(nonce);
+    tx_req.gas_price = Some(gas_price.into());
 
     if let Some(v) = value {
         tx_req = tx_req.value(v);
