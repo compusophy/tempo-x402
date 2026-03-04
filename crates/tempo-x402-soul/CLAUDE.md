@@ -83,6 +83,7 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 - Gated by `SOUL_NEUROPLASTIC` env var (default true) — harmless if false, just skips salience/decay/prediction
 - **Feedback loop**: Observe → [CODE] → Phase 2 (Code mode, write/edit/commit) → Phase 3 (Reflection: check_self, verify, record learnings)
 - **Fresh conversation per phase**: each phase gets its own conversation with a text summary of the previous phase's conclusion — prevents Phase 2/3 from re-sending all of Phase 1's tool outputs
+- **Per-mode tool budgets enforced**: Phase 1 (Observe) capped at 5 tool calls, Phase 2 (Code) at 15, Phase 3 (Reflect) at 5 — all min(mode, config)
 - Phase 3 reflection: 5-tool budget, non-deep model, receives mutation context (SHA, pass/fail, files) + reward breakdown (new/growing/stagnant endpoints)
 - Reflection salience is dynamic: base 0.5 + reward contribution (max 0.3), tied to actual endpoint performance
 - Mutation history (last 5 commits with check/test pass/fail) and endpoint summary table (slug, price, requests, payments, revenue) provided in think context
@@ -115,7 +116,7 @@ No dependency on gateway/identity/agent/node. Communicates via `NodeObserver` tr
 | `SOUL_UPSTREAM_REPO` | — | Upstream repo for PRs/issues (e.g. `compusophy/tempo-x402`) |
 | `SOUL_DIRECT_PUSH` | `false` | Push directly to fork's main branch (self-editing mode). Safety: cargo check + test still gate every commit |
 | `SOUL_MEMORY_FILE` | `/data/soul_memory.md` | Path to persistent memory file (markdown, max 4KB) |
-| `GATEWAY_URL` | — | Gateway URL for `register_endpoint` tool (falls back to `http://localhost:4023`) |
+| `GATEWAY_URL` | — | Gateway URL for `check_self`/`register_endpoint` tools (falls back to `http://localhost:$PORT`, then `:4023`) |
 | `SOUL_NEUROPLASTIC` | `true` | Enable neuroplastic memory: salience scoring, tiered decay, prediction error |
 | `SOUL_PRUNE_THRESHOLD` | `0.01` | Strength threshold below which non-long-term thoughts are pruned |
 

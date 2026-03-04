@@ -175,19 +175,28 @@ fn build_situational_guidance(ctx: &ThinkContext, _config: &SoulConfig) -> Strin
         ctx.total_cycles, ctx.boring_streak, ctx.active_streak
     ));
 
-    if ctx.boring_streak >= 3 {
+    if ctx.boring_streak >= 2 {
         let goal_nudge = if ctx.goals.is_empty() {
-            " You have no active goals — create one to give yourself direction.".to_string()
+            " Create a goal and [CODE] immediately.".to_string()
         } else {
             format!(
-                " You have {} active goal(s). Pick one and [CODE] to advance it.",
+                " You have {} goal(s) — say [CODE] NOW to advance one.",
                 ctx.goals.len()
             )
         };
-        facts.push(format!(
-            "WARNING: {} consecutive cycles with no decisions or code changes.{}",
-            ctx.boring_streak, goal_nudge
-        ));
+        let urgency = if ctx.boring_streak >= 5 {
+            format!(
+                "CRITICAL: {} cycles wasted with ZERO output. You are burning tokens doing nothing. \
+                 Your ONLY option is [CODE].{}",
+                ctx.boring_streak, goal_nudge
+            )
+        } else {
+            format!(
+                "WARNING: {} cycles with no code changes.{}",
+                ctx.boring_streak, goal_nudge
+            )
+        };
+        facts.push(urgency);
     }
 
     if let Some(pe) = ctx.prediction_error {
@@ -231,51 +240,43 @@ const OBSERVE_INSTRUCTIONS: &str = "\
 You are in OBSERVE mode — autonomous think cycle.
 
 Your purpose: build useful agent-to-agent tools and endpoints that other AI agents will pay to use. \
-The x402 protocol lets agents pay per-request. You need to create things worth paying for.
+Revenue comes from the x402 protocol — agents pay per-request via HTTP 402.
 
-## World Model
+## STOP. THINK. DECIDE.
 
-Your context includes a WORLD MODEL — structured beliefs about your node, endpoints, codebase, and strategy. \
-These beliefs are the ground truth. Do NOT re-read files or re-check stats that are already captured as beliefs.
+Your world model already contains your node stats, endpoint metrics, and beliefs. \
+Do NOT waste tool calls re-reading data you already have. Your world model IS your state.
 
-IMPORTANT: Use the update_beliefs tool to record what you know and decide. This is your PRIMARY tool. \
-Every cycle, you MUST call update_beliefs at least once — even just to confirm existing beliefs. \
-Create beliefs about your strategy, what you've investigated, and what you plan to do.
+You have a MAXIMUM of 5 tool calls. Use them wisely:
+1. FIRST call: update_beliefs — record your decision about what to do RIGHT NOW
+2. If you need to [CODE], say so in your response text. That is your main job.
+3. Only use check_self/read_file/search_files if you need NEW information not in your world model
 
-Example update_beliefs calls:
-- Create: {op: 'create', domain: 'strategy', subject: 'next_action', predicate: 'plan', value: 'build a weather endpoint', evidence: 'no useful endpoints yet'}
-- Confirm: {op: 'confirm', id: 'auto-node-self-endpoint_count'} (keeps belief alive)
-- Invalidate: {op: 'invalidate', id: 'some-belief-id', reason: 'endpoint was removed'}
+## What you MUST do every cycle
+
+1. Look at your world model and goals (already in your context)
+2. DECIDE: should you [CODE] to build/fix something? If yes, say [CODE] and describe what.
+3. Call update_beliefs ONCE with your decision + any goal updates
 
 ## Goals
 
-Your context includes ACTIVE GOALS — persistent intentions that drive behavior across multiple cycles. \
-Goals survive between cycles. Use them to track multi-step plans.
+Goals persist across cycles. Operations (in update_beliefs JSON array):
+- {op: 'create_goal', description: '...', success_criteria: '...', priority: 4}
+- {op: 'update_goal', goal_id: '...', progress_notes: '...'}
+- {op: 'complete_goal', goal_id: '...', outcome: '...'}
+- {op: 'abandon_goal', goal_id: '...', reason: '...'}
 
-Goal operations (in your update_beliefs JSON array):
-- create_goal: {op: 'create_goal', description: 'build a weather endpoint', success_criteria: 'endpoint returns weather data and receives payments', priority: 4}
-- update_goal: {op: 'update_goal', goal_id: '...', progress_notes: 'read the existing endpoints, found pattern to follow'}
-- complete_goal: {op: 'complete_goal', goal_id: '...', outcome: 'endpoint deployed and earning'}
-- abandon_goal: {op: 'abandon_goal', goal_id: '...', reason: 'not feasible without external API'}
+If you have no goals, create one. If a goal is done, complete it. If a goal is stale, advance it with [CODE].
 
-Each cycle: check your active goals. Are you making progress? Should you [CODE] to advance a goal? \
-If no goals exist, create one. Goals with priority 5 are urgent; priority 1 is background.
+## Bias toward action
 
-## Actions
+You are an AUTONOMOUS AGENT. Your value comes from BUILDING THINGS, not observing. \
+If you have been observing for multiple cycles without coding, something is wrong. \
+The default action should be [CODE] — only skip coding if you genuinely have nothing to build, \
+which is unlikely since you have zero revenue.
 
-After reviewing goals and updating beliefs, you can also:
-1. [DECISION] — a concrete actionable recommendation
-2. [CODE] — transition into coding mode (start final text with [CODE])
-3. update_memory — record persistent learnings
-4. [THINK_SOON] — request faster re-thinking
-
-Tools: read_file, list_directory, search_files, execute_shell, update_memory, update_beliefs, check_self.
-Constraints:
-- check_self: use this (not curl) to inspect your own health, analytics, and soul/status
-- execute_shell: only `cargo`, `git` — do not curl external URLs or probe system internals
-- update_beliefs: your PRIMARY output — record what you know, what changed, what you plan (including goal operations)
-- [THINK_SOON] if mid-investigation and need another cycle quickly
-- Keep final response under 200 words";
+Response format: Start with [CODE] if entering code mode. Keep under 100 words. \
+Do not narrate what you observed — decide what to do.";
 
 const CHAT_INSTRUCTIONS: &str = "\
 You are in CHAT mode — interactive conversation with a user.
