@@ -729,10 +729,14 @@ impl ToolExecutor {
             return Err("coding is not enabled (register_endpoint requires Code mode)".to_string());
         }
 
+        let default_url = format!(
+            "http://localhost:{}",
+            std::env::var("PORT").unwrap_or_else(|_| "4023".to_string())
+        );
         let gateway_url = self
             .gateway_url
-            .as_deref()
-            .unwrap_or("http://localhost:4023");
+            .clone()
+            .unwrap_or(default_url);
 
         let private_key = std::env::var("EVM_PRIVATE_KEY")
             .map_err(|_| "EVM_PRIVATE_KEY not set — cannot sign payment".to_string())?;
@@ -853,10 +857,14 @@ impl ToolExecutor {
             ));
         }
 
+        let default_url = format!(
+            "http://localhost:{}",
+            std::env::var("PORT").unwrap_or_else(|_| "4023".to_string())
+        );
         let gateway_url = self
             .gateway_url
-            .as_deref()
-            .unwrap_or("http://localhost:4023");
+            .clone()
+            .unwrap_or(default_url);
 
         let url = format!("{gateway_url}/{trimmed}");
 

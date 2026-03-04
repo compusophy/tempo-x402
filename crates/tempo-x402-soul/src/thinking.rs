@@ -730,7 +730,7 @@ impl ThinkingLoop {
             &tool_declarations,
             &self.tool_executor,
             &self.db,
-            self.config.max_tool_calls,
+            AgentMode::Observe.max_tool_calls().min(self.config.max_tool_calls),
             use_deep,
         )
         .await?;
@@ -790,7 +790,7 @@ impl ThinkingLoop {
                 ))],
             }];
 
-            let code_budget = self.config.max_tool_calls;
+            let code_budget = AgentMode::Code.max_tool_calls().min(self.config.max_tool_calls);
             let phase2_result = run_tool_loop_with_model(
                 llm,
                 &code_system_prompt,
