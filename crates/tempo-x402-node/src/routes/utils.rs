@@ -223,7 +223,7 @@ pub async fn get_balance(
         data.extend_from_slice(address.as_slice());
 
         let mut tx = alloy::rpc::types::TransactionRequest::default();
-        tx.to = Some(token_address);
+        tx.to = Some(token_address.into());
         tx.input = alloy::rpc::types::TransactionInput::from(data);
 
         match provider.call(tx).await {
@@ -357,7 +357,7 @@ pub async fn get_allowance(
     data.extend_from_slice(spender.as_slice());
 
     let mut tx = alloy::rpc::types::TransactionRequest::default();
-    tx.to = Some(token);
+    tx.to = Some(token.into());
     tx.input = alloy::rpc::types::TransactionInput::from(data);
 
     match provider.call(tx).await {
@@ -412,7 +412,7 @@ pub async fn eth_call(
     };
 
     let mut tx = alloy::rpc::types::TransactionRequest::default();
-    tx.to = Some(to);
+    tx.to = Some(to.into());
     tx.input = alloy::rpc::types::TransactionInput::from(data);
 
     match provider.call(tx).await {
@@ -589,7 +589,7 @@ pub async fn tx_builder(
 
     let mut tx_req = alloy::rpc::types::TransactionRequest::default();
     tx_req.from = Some(from);
-    tx_req.to = Some(to);
+    tx_req.to = Some(to.into());
     tx_req.input = alloy::rpc::types::TransactionInput::from(data.clone());
     tx_req.nonce = Some(nonce);
     tx_req.gas_price = Some(gas_price.into());
