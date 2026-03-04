@@ -31,6 +31,7 @@ pub use config::SoulConfig;
 pub use db::SoulDatabase;
 pub use error::SoulError;
 pub use memory::{Thought, ThoughtType};
+pub use world_model::{Goal, GoalStatus};
 pub use observer::{NodeObserver, NodeSnapshot};
 pub use thinking::ThinkingLoop;
 pub use tools::ToolExecutor;

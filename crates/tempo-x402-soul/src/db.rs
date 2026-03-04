@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SoulError;
 use crate::memory::{Thought, ThoughtType};
-use crate::world_model::{Belief, BeliefDomain, Confidence};
+use crate::world_model::{Belief, BeliefDomain, Confidence, Goal, GoalStatus};
 
 /// A dynamically registered tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +40,8 @@ pub struct Mutation {
     pub cargo_check_passed: bool,
     pub cargo_test_passed: bool,
     pub created_at: i64,
+    /// The goal this mutation advances (if any).
+    pub goal_id: Option<String>,
 }
 
 const SCHEMA: &str = r#"
@@ -156,6 +158,30 @@ impl SoulDatabase {
                 CREATE INDEX IF NOT EXISTS idx_beliefs_domain ON beliefs(domain);
                 PRAGMA user_version = 2;",
             )?;
+        }
+
+        if version < 3 {
+            // v3: goals table + goal_id on mutations
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS goals (
+                    id TEXT PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    priority INTEGER NOT NULL DEFAULT 3,
+                    success_criteria TEXT NOT NULL DEFAULT '',
+                    progress_notes TEXT NOT NULL DEFAULT '',
+                    parent_goal_id TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    completed_at INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+                CREATE INDEX IF NOT EXISTS idx_goals_priority ON goals(priority);",
+            )?;
+            // Add goal_id to mutations (ignore if already exists)
+            let _ = conn.execute_batch("ALTER TABLE mutations ADD COLUMN goal_id TEXT");
+            conn.execute_batch("PRAGMA user_version = 3;")?;
         }
 
         Ok(())
@@ -300,8 +326,8 @@ impl SoulDatabase {
         })?;
 
         conn.execute(
-            "INSERT INTO mutations (id, commit_sha, branch, description, files_changed, cargo_check_passed, cargo_test_passed, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO mutations (id, commit_sha, branch, description, files_changed, cargo_check_passed, cargo_test_passed, created_at, goal_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 mutation.id,
                 mutation.commit_sha,
@@ -311,6 +337,7 @@ impl SoulDatabase {
                 mutation.cargo_check_passed as i32,
                 mutation.cargo_test_passed as i32,
                 mutation.created_at,
+                mutation.goal_id,
             ],
         )?;
         Ok(())
@@ -325,7 +352,7 @@ impl SoulDatabase {
         })?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, commit_sha, branch, description, files_changed, cargo_check_passed, cargo_test_passed, created_at \
+            "SELECT id, commit_sha, branch, description, files_changed, cargo_check_passed, cargo_test_passed, created_at, goal_id \
              FROM mutations ORDER BY created_at DESC LIMIT ?1",
         )?;
 
@@ -342,6 +369,7 @@ impl SoulDatabase {
                     cargo_check_passed: check != 0,
                     cargo_test_passed: test != 0,
                     created_at: row.get(7)?,
+                    goal_id: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -883,6 +911,151 @@ impl SoulDatabase {
         Ok((demoted_high, demoted_medium, deactivated))
     }
 
+    // ── Goal operations ──
+
+    /// Insert a new goal.
+    pub fn insert_goal(&self, goal: &Goal) -> Result<(), SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        conn.execute(
+            "INSERT INTO goals (id, description, status, priority, success_criteria, \
+             progress_notes, parent_goal_id, retry_count, created_at, updated_at, completed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                goal.id,
+                goal.description,
+                goal.status.as_str(),
+                goal.priority,
+                goal.success_criteria,
+                goal.progress_notes,
+                goal.parent_goal_id,
+                goal.retry_count,
+                goal.created_at,
+                goal.updated_at,
+                goal.completed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get all active goals, ordered by priority DESC then created_at ASC.
+    pub fn get_active_goals(&self) -> Result<Vec<Goal>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let mut stmt = conn.prepare(
+            "SELECT id, description, status, priority, success_criteria, progress_notes, \
+             parent_goal_id, retry_count, created_at, updated_at, completed_at \
+             FROM goals WHERE status = 'active' ORDER BY priority DESC, created_at ASC",
+        )?;
+        let goals = stmt
+            .query_map([], Self::row_to_goal)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(goals)
+    }
+
+    /// Get a goal by ID (any status).
+    pub fn get_goal(&self, id: &str) -> Result<Option<Goal>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let result = conn
+            .query_row(
+                "SELECT id, description, status, priority, success_criteria, progress_notes, \
+                 parent_goal_id, retry_count, created_at, updated_at, completed_at \
+                 FROM goals WHERE id = ?1",
+                params![id],
+                Self::row_to_goal,
+            )
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Update a goal's status and/or progress notes.
+    pub fn update_goal(
+        &self,
+        id: &str,
+        status: Option<&str>,
+        progress_notes: Option<&str>,
+        completed_at: Option<i64>,
+    ) -> Result<bool, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = conn.execute(
+            "UPDATE goals SET \
+             status = COALESCE(?2, status), \
+             progress_notes = COALESCE(?3, progress_notes), \
+             completed_at = COALESCE(?4, completed_at), \
+             updated_at = ?5 \
+             WHERE id = ?1",
+            params![id, status, progress_notes, completed_at, now],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Increment retry count for a goal.
+    pub fn increment_goal_retry(&self, id: &str) -> Result<bool, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = conn.execute(
+            "UPDATE goals SET retry_count = retry_count + 1, updated_at = ?2 WHERE id = ?1",
+            params![id, now],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Get recently completed/abandoned goals (for reflection context).
+    pub fn recent_finished_goals(&self, limit: u32) -> Result<Vec<Goal>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let mut stmt = conn.prepare(
+            "SELECT id, description, status, priority, success_criteria, progress_notes, \
+             parent_goal_id, retry_count, created_at, updated_at, completed_at \
+             FROM goals WHERE status IN ('completed', 'abandoned', 'failed') \
+             ORDER BY updated_at DESC LIMIT ?1",
+        )?;
+        let goals = stmt
+            .query_map(params![limit], Self::row_to_goal)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(goals)
+    }
+
+    /// Helper: map a row to a Goal.
+    fn row_to_goal(row: &rusqlite::Row) -> Result<Goal, rusqlite::Error> {
+        let status_str: String = row.get(2)?;
+        Ok(Goal {
+            id: row.get(0)?,
+            description: row.get(1)?,
+            status: GoalStatus::parse(&status_str).unwrap_or(GoalStatus::Active),
+            priority: row.get(3)?,
+            success_criteria: row.get(4)?,
+            progress_notes: row.get(5)?,
+            parent_goal_id: row.get(6)?,
+            retry_count: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+            completed_at: row.get(10)?,
+        })
+    }
+
     /// Helper: map a row to a Belief.
     fn row_to_belief(row: &rusqlite::Row) -> Result<Belief, rusqlite::Error> {
         let domain_str: String = row.get(1)?;
@@ -1321,5 +1494,86 @@ mod tests {
         let (_, _, deactivated) = db.decay_beliefs().unwrap();
         // The very old belief goes High→Medium→Low→inactive in one pass
         assert!(deactivated >= 1);
+    }
+
+    #[test]
+    fn test_goal_crud() {
+        use crate::world_model::{Goal, GoalStatus};
+
+        let db = SoulDatabase::new(":memory:").unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        let goal = Goal {
+            id: "g1".to_string(),
+            description: "Build a weather endpoint".to_string(),
+            status: GoalStatus::Active,
+            priority: 4,
+            success_criteria: "Endpoint returns weather data".to_string(),
+            progress_notes: String::new(),
+            parent_goal_id: None,
+            retry_count: 0,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        };
+        db.insert_goal(&goal).unwrap();
+
+        // Fetch active goals
+        let active = db.get_active_goals().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].description, "Build a weather endpoint");
+        assert_eq!(active[0].priority, 4);
+
+        // Update progress
+        db.update_goal("g1", None, Some("Read existing endpoint patterns"), None)
+            .unwrap();
+        let updated = db.get_goal("g1").unwrap().unwrap();
+        assert_eq!(updated.progress_notes, "Read existing endpoint patterns");
+
+        // Complete goal
+        db.update_goal("g1", Some("completed"), Some("Deployed and earning"), Some(now))
+            .unwrap();
+        let completed = db.get_goal("g1").unwrap().unwrap();
+        assert_eq!(completed.status, GoalStatus::Completed);
+
+        // No longer in active list
+        let active = db.get_active_goals().unwrap();
+        assert!(active.is_empty());
+
+        // Shows in recent finished
+        let finished = db.recent_finished_goals(5).unwrap();
+        assert_eq!(finished.len(), 1);
+    }
+
+    #[test]
+    fn test_goal_priority_ordering() {
+        use crate::world_model::{Goal, GoalStatus};
+
+        let db = SoulDatabase::new(":memory:").unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        for (id, prio) in &[("g1", 2), ("g2", 5), ("g3", 3)] {
+            db.insert_goal(&Goal {
+                id: id.to_string(),
+                description: format!("Goal priority {prio}"),
+                status: GoalStatus::Active,
+                priority: *prio,
+                success_criteria: String::new(),
+                progress_notes: String::new(),
+                parent_goal_id: None,
+                retry_count: 0,
+                created_at: now,
+                updated_at: now,
+                completed_at: None,
+            })
+            .unwrap();
+        }
+
+        let active = db.get_active_goals().unwrap();
+        assert_eq!(active.len(), 3);
+        // Ordered by priority DESC
+        assert_eq!(active[0].priority, 5);
+        assert_eq!(active[1].priority, 3);
+        assert_eq!(active[2].priority, 2);
     }
 }

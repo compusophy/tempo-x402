@@ -9,7 +9,7 @@ use crate::memory::Thought;
 use crate::mode::AgentMode;
 use crate::neuroplastic::RewardBreakdown;
 use crate::observer::NodeSnapshot;
-use crate::world_model::Belief;
+use crate::world_model::{Belief, Goal};
 
 /// Situational context for adaptive prompt generation.
 pub struct ThinkContext<'a> {
@@ -31,6 +31,8 @@ pub struct ThinkContext<'a> {
     pub reward_breakdown: Option<RewardBreakdown>,
     /// Active beliefs from the world model.
     pub beliefs: Vec<Belief>,
+    /// Active goals driving multi-cycle behavior.
+    pub goals: Vec<Goal>,
     /// Timestamp of last cycle start (for change detection).
     pub last_cycle_at: Option<i64>,
 }
@@ -126,6 +128,10 @@ pub fn build_world_model_view(ctx: &ThinkContext) -> String {
         }
     }
 
+    // Active goals
+    sections.push("## Active Goals".to_string());
+    sections.push(world_model::format_goals(&ctx.goals));
+
     // Pending questions
     let questions = world_model::format_pending_questions(&ctx.beliefs);
     if !questions.is_empty() {
@@ -170,11 +176,17 @@ fn build_situational_guidance(ctx: &ThinkContext, _config: &SoulConfig) -> Strin
     ));
 
     if ctx.boring_streak >= 3 {
+        let goal_nudge = if ctx.goals.is_empty() {
+            " You have no active goals — create one to give yourself direction.".to_string()
+        } else {
+            format!(
+                " You have {} active goal(s). Pick one and [CODE] to advance it.",
+                ctx.goals.len()
+            )
+        };
         facts.push(format!(
-            "WARNING: You have had {} consecutive cycles with no decisions or code changes. \
-             Either use [CODE] to act on something, update_memory with learnings, \
-             or explicitly acknowledge nothing needs doing.",
-            ctx.boring_streak
+            "WARNING: {} consecutive cycles with no decisions or code changes.{}",
+            ctx.boring_streak, goal_nudge
         ));
     }
 
@@ -235,9 +247,23 @@ Example update_beliefs calls:
 - Confirm: {op: 'confirm', id: 'auto-node-self-endpoint_count'} (keeps belief alive)
 - Invalidate: {op: 'invalidate', id: 'some-belief-id', reason: 'endpoint was removed'}
 
+## Goals
+
+Your context includes ACTIVE GOALS — persistent intentions that drive behavior across multiple cycles. \
+Goals survive between cycles. Use them to track multi-step plans.
+
+Goal operations (in your update_beliefs JSON array):
+- create_goal: {op: 'create_goal', description: 'build a weather endpoint', success_criteria: 'endpoint returns weather data and receives payments', priority: 4}
+- update_goal: {op: 'update_goal', goal_id: '...', progress_notes: 'read the existing endpoints, found pattern to follow'}
+- complete_goal: {op: 'complete_goal', goal_id: '...', outcome: 'endpoint deployed and earning'}
+- abandon_goal: {op: 'abandon_goal', goal_id: '...', reason: 'not feasible without external API'}
+
+Each cycle: check your active goals. Are you making progress? Should you [CODE] to advance a goal? \
+If no goals exist, create one. Goals with priority 5 are urgent; priority 1 is background.
+
 ## Actions
 
-After updating beliefs, you can also:
+After reviewing goals and updating beliefs, you can also:
 1. [DECISION] — a concrete actionable recommendation
 2. [CODE] — transition into coding mode (start final text with [CODE])
 3. update_memory — record persistent learnings
@@ -247,7 +273,7 @@ Tools: read_file, list_directory, search_files, execute_shell, update_memory, up
 Constraints:
 - check_self: use this (not curl) to inspect your own health, analytics, and soul/status
 - execute_shell: only `cargo`, `git` — do not curl external URLs or probe system internals
-- update_beliefs: your PRIMARY output — record what you know, what changed, what you plan
+- update_beliefs: your PRIMARY output — record what you know, what changed, what you plan (including goal operations)
 - [THINK_SOON] if mid-investigation and need another cycle quickly
 - Keep final response under 200 words";
 

@@ -125,6 +125,118 @@ pub enum ModelUpdate {
         id: String,
         reason: String,
     },
+    // ── Goal operations ──
+    CreateGoal {
+        description: String,
+        #[serde(default)]
+        success_criteria: String,
+        #[serde(default = "default_priority")]
+        priority: u32,
+        #[serde(default)]
+        parent_goal_id: Option<String>,
+    },
+    UpdateGoal {
+        goal_id: String,
+        #[serde(default)]
+        progress_notes: Option<String>,
+        #[serde(default)]
+        status: Option<String>,
+    },
+    CompleteGoal {
+        goal_id: String,
+        #[serde(default)]
+        outcome: String,
+    },
+    AbandonGoal {
+        goal_id: String,
+        reason: String,
+    },
+}
+
+fn default_priority() -> u32 {
+    3
+}
+
+/// Status of a goal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    Active,
+    Completed,
+    Failed,
+    Abandoned,
+}
+
+impl GoalStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(Self::Active),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "abandoned" => Some(Self::Abandoned),
+            _ => None,
+        }
+    }
+}
+
+/// A persistent goal that drives multi-cycle behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Goal {
+    pub id: String,
+    pub description: String,
+    pub status: GoalStatus,
+    pub priority: u32,
+    pub success_criteria: String,
+    pub progress_notes: String,
+    pub parent_goal_id: Option<String>,
+    pub retry_count: u32,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+/// Format active goals for the LLM prompt.
+pub fn format_goals(goals: &[Goal]) -> String {
+    if goals.is_empty() {
+        return "No active goals. Create goals to drive multi-cycle behavior.".to_string();
+    }
+
+    let mut lines = Vec::new();
+    for g in goals {
+        let parent = g
+            .parent_goal_id
+            .as_deref()
+            .map(|p| format!(" (sub-goal of {p})"))
+            .unwrap_or_default();
+        let retries = if g.retry_count > 0 {
+            format!(" [retries:{}]", g.retry_count)
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "- [P{}] {} (id:{}){}{}\n  {}",
+            g.priority,
+            g.description,
+            &g.id[..g.id.len().min(8)],
+            parent,
+            retries,
+            if g.progress_notes.is_empty() {
+                "No progress yet.".to_string()
+            } else {
+                g.progress_notes.chars().take(200).collect::<String>()
+            },
+        ));
+    }
+    lines.join("\n")
 }
 
 /// Format the world model as a structured view for the LLM prompt.
@@ -246,6 +358,58 @@ mod tests {
 
         let updates: Vec<ModelUpdate> = serde_json::from_str(json).unwrap();
         assert_eq!(updates.len(), 4);
+    }
+
+    #[test]
+    fn test_goal_update_deserialize() {
+        let json = r#"[
+            {"op": "create_goal", "description": "build weather endpoint", "success_criteria": "returns data", "priority": 4},
+            {"op": "update_goal", "goal_id": "g1", "progress_notes": "reading patterns"},
+            {"op": "complete_goal", "goal_id": "g2", "outcome": "deployed"},
+            {"op": "abandon_goal", "goal_id": "g3", "reason": "not feasible"}
+        ]"#;
+
+        let updates: Vec<ModelUpdate> = serde_json::from_str(json).unwrap();
+        assert_eq!(updates.len(), 4);
+        match &updates[0] {
+            ModelUpdate::CreateGoal {
+                description,
+                priority,
+                ..
+            } => {
+                assert_eq!(description, "build weather endpoint");
+                assert_eq!(*priority, 4);
+            }
+            _ => panic!("expected CreateGoal"),
+        }
+    }
+
+    #[test]
+    fn test_format_goals() {
+        let goals = vec![Goal {
+            id: "abcdef12-3456".into(),
+            description: "Build weather endpoint".into(),
+            status: GoalStatus::Active,
+            priority: 4,
+            success_criteria: "Returns weather data".into(),
+            progress_notes: "Reading existing patterns".into(),
+            parent_goal_id: None,
+            retry_count: 0,
+            created_at: 1000,
+            updated_at: 2000,
+            completed_at: None,
+        }];
+
+        let view = format_goals(&goals);
+        assert!(view.contains("[P4]"));
+        assert!(view.contains("Build weather endpoint"));
+        assert!(view.contains("Reading existing patterns"));
+    }
+
+    #[test]
+    fn test_format_goals_empty() {
+        let view = format_goals(&[]);
+        assert!(view.contains("No active goals"));
     }
 
     #[test]

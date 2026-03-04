@@ -21,6 +21,22 @@ struct SoulStatus {
     /// Active beliefs from the world model.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     beliefs: Vec<BeliefEntry>,
+    /// Active goals driving multi-cycle behavior.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    goals: Vec<GoalEntry>,
+}
+
+#[derive(Serialize)]
+struct GoalEntry {
+    id: String,
+    description: String,
+    status: String,
+    priority: u32,
+    success_criteria: String,
+    progress_notes: String,
+    retry_count: u32,
+    created_at: i64,
+    updated_at: i64,
 }
 
 #[derive(Serialize)]
@@ -94,8 +110,19 @@ async fn soul_status(state: web::Data<NodeState>) -> HttpResponse {
         .flatten()
         .and_then(|s| s.parse().ok());
 
+    // Show what the soul *thinks*, not what it *greps* — filter out ToolExecution
     let recent_thoughts: Vec<ThoughtEntry> = soul_db
-        .recent_thoughts(15)
+        .recent_thoughts_by_type(
+            &[
+                x402_soul::ThoughtType::Decision,
+                x402_soul::ThoughtType::Reasoning,
+                x402_soul::ThoughtType::Observation,
+                x402_soul::ThoughtType::Reflection,
+                x402_soul::ThoughtType::MemoryConsolidation,
+                x402_soul::ThoughtType::Prediction,
+            ],
+            15,
+        )
         .unwrap_or_default()
         .into_iter()
         .map(|t| ThoughtEntry {
@@ -171,6 +198,24 @@ async fn soul_status(state: web::Data<NodeState>) -> HttpResponse {
         })
         .collect();
 
+    // Fetch active goals
+    let goals: Vec<GoalEntry> = soul_db
+        .get_active_goals()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|g| GoalEntry {
+            id: g.id,
+            description: g.description,
+            status: g.status.as_str().to_string(),
+            priority: g.priority,
+            success_criteria: g.success_criteria,
+            progress_notes: g.progress_notes,
+            retry_count: g.retry_count,
+            created_at: g.created_at,
+            updated_at: g.updated_at,
+        })
+        .collect();
+
     HttpResponse::Ok().json(SoulStatus {
         active: true,
         dormant: state.soul_dormant,
@@ -189,6 +234,7 @@ async fn soul_status(state: web::Data<NodeState>) -> HttpResponse {
         },
         recent_thoughts,
         beliefs,
+        goals,
     })
 }
 

@@ -35,7 +35,7 @@ pub struct ToolExecutor {
 }
 
 /// Max output size per stream (stdout/stderr) to stay within LLM context limits.
-const MAX_OUTPUT_BYTES: usize = 16384;
+const MAX_OUTPUT_BYTES: usize = 4096;
 
 /// Max file size for read_file (16KB).
 const MAX_READ_BYTES: usize = 16384;
@@ -646,6 +646,12 @@ impl ToolExecutor {
         let workspace = self.workspace_root.to_string_lossy().to_string();
         let result = coding::validated_commit(git, &workspace, files, message).await?;
 
+        // Link mutation to highest-priority active goal (if any)
+        let active_goal_id = db
+            .get_active_goals()
+            .ok()
+            .and_then(|goals| goals.first().map(|g| g.id.clone()));
+
         // Record mutation in database
         let mutation = Mutation {
             id: uuid::Uuid::new_v4().to_string(),
@@ -656,6 +662,7 @@ impl ToolExecutor {
             cargo_check_passed: result.cargo_check_passed,
             cargo_test_passed: result.cargo_test_passed,
             created_at: chrono::Utc::now().timestamp(),
+            goal_id: active_goal_id,
         };
         let _ = db.insert_mutation(&mutation);
 
@@ -993,6 +1000,55 @@ impl ToolExecutor {
                 }
                 ModelUpdate::Confirm { id } => db.confirm_belief(id),
                 ModelUpdate::Invalidate { id, reason } => db.invalidate_belief(id, reason),
+                // Goal operations
+                ModelUpdate::CreateGoal {
+                    description,
+                    success_criteria,
+                    priority,
+                    parent_goal_id,
+                } => {
+                    use crate::world_model::{Goal, GoalStatus};
+                    let active_count = db.get_active_goals().map(|g| g.len()).unwrap_or(0);
+                    if active_count >= 10 {
+                        errors.push(format!("update[{i}]: goal cap reached (10 active)"));
+                        continue;
+                    }
+                    let goal = Goal {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        description: description.clone(),
+                        status: GoalStatus::Active,
+                        priority: *priority,
+                        success_criteria: success_criteria.clone(),
+                        progress_notes: String::new(),
+                        parent_goal_id: parent_goal_id.clone(),
+                        retry_count: 0,
+                        created_at: now,
+                        updated_at: now,
+                        completed_at: None,
+                    };
+                    db.insert_goal(&goal).map(|_| true)
+                }
+                ModelUpdate::UpdateGoal {
+                    goal_id,
+                    progress_notes,
+                    status,
+                } => db.update_goal(
+                    goal_id,
+                    status.as_deref(),
+                    progress_notes.as_deref(),
+                    None,
+                ),
+                ModelUpdate::CompleteGoal { goal_id, outcome } => {
+                    let notes = if outcome.is_empty() {
+                        None
+                    } else {
+                        Some(outcome.as_str())
+                    };
+                    db.update_goal(goal_id, Some("completed"), notes, Some(now))
+                }
+                ModelUpdate::AbandonGoal { goal_id, reason } => {
+                    db.update_goal(goal_id, Some("abandoned"), Some(reason.as_str()), Some(now))
+                }
             };
 
             match result {

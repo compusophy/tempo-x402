@@ -9,7 +9,7 @@ pub struct SoulConfig {
     pub llm_api_key: Option<String>,
     /// Fast model for routine thinking (default: gemini-3-flash-preview).
     pub llm_model_fast: String,
-    /// Deeper model for complex reasoning (default: gemini-3.1-pro-preview).
+    /// Deeper model for complex reasoning (default: same as fast model).
     pub llm_model_think: String,
     /// Path to the soul's SQLite database (default: ./soul.db).
     pub db_path: String,
@@ -109,7 +109,7 @@ impl SoulConfig {
             .unwrap_or_else(|_| "gemini-3-flash-preview".to_string());
 
         let llm_model_think = std::env::var("GEMINI_MODEL_THINK")
-            .unwrap_or_else(|_| "gemini-3.1-pro-preview".to_string());
+            .unwrap_or_else(|_| llm_model_fast.clone());
 
         let db_path = std::env::var("SOUL_DB_PATH").unwrap_or_else(|_| "./soul.db".to_string());
 
@@ -139,7 +139,7 @@ impl SoulConfig {
         let max_tool_calls: u32 = std::env::var("SOUL_MAX_TOOL_CALLS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(25);
+            .unwrap_or(15);
 
         let tool_timeout_secs: u64 = std::env::var("SOUL_TOOL_TIMEOUT_SECS")
             .ok()

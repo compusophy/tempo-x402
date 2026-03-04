@@ -507,55 +507,33 @@ impl ThinkingLoop {
         };
 
         // ── Step 7: Structured thought retrieval (salience-based if neuroplastic) ──
-        // Include ToolExecution + Reflection so the soul knows what it already read/did/learned.
-        let (decisions, reasoning, observations, consolidations, reflections, tool_executions) =
-            if neuroplastic {
-                (
-                    self.db
-                        .salient_thoughts_by_type(&[ThoughtType::Decision], 3)?,
-                    self.db
-                        .salient_thoughts_by_type(&[ThoughtType::Reasoning], 3)?,
-                    self.db
-                        .salient_thoughts_by_type(&[ThoughtType::Observation], 2)?,
-                    self.db
-                        .salient_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?,
-                    self.db
-                        .salient_thoughts_by_type(&[ThoughtType::Reflection], 2)?,
-                    self.db
-                        .recent_thoughts_by_type(&[ThoughtType::ToolExecution], 8)?,
-                )
-            } else {
-                (
-                    self.db
-                        .recent_thoughts_by_type(&[ThoughtType::Decision], 3)?,
-                    self.db
-                        .recent_thoughts_by_type(&[ThoughtType::Reasoning], 3)?,
-                    self.db
-                        .recent_thoughts_by_type(&[ThoughtType::Observation], 2)?,
-                    self.db
-                        .recent_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?,
-                    self.db
-                        .recent_thoughts_by_type(&[ThoughtType::Reflection], 2)?,
-                    self.db
-                        .recent_thoughts_by_type(&[ThoughtType::ToolExecution], 8)?,
-                )
-            };
-
-        // Deduplicate tool executions: keep only the most recent occurrence of each unique tool call.
-        // "read_file: main.rs" appearing 5 times → show once. Cap at 3 unique entries.
-        let deduped_tools = {
-            let mut seen = std::collections::HashSet::new();
-            let mut unique = Vec::new();
-            for t in &tool_executions {
-                // Use content as the dedup key (e.g. "read_file: crates/.../main.rs")
-                if seen.insert(t.content.clone()) {
-                    unique.push(t.clone());
-                }
-                if unique.len() >= 3 {
-                    break;
-                }
-            }
-            unique
+        // Retrieve actual reasoning thoughts — tool executions are ephemeral and not stored.
+        let (decisions, reasoning, observations, consolidations, reflections) = if neuroplastic {
+            (
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::Decision], 3)?,
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::Reasoning], 3)?,
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::Observation], 2)?,
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?,
+                self.db
+                    .salient_thoughts_by_type(&[ThoughtType::Reflection], 2)?,
+            )
+        } else {
+            (
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::Decision], 3)?,
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::Reasoning], 3)?,
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::Observation], 2)?,
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?,
+                self.db
+                    .recent_thoughts_by_type(&[ThoughtType::Reflection], 2)?,
+            )
         };
 
         // Merge and sort by created_at DESC
@@ -565,7 +543,6 @@ impl ThinkingLoop {
         recent.extend(observations);
         recent.extend(consolidations);
         recent.extend(reflections);
-        recent.extend(deduped_tools);
         recent.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
         // ── Step 8: Reinforce recalled thoughts (Hebbian boost) ──
@@ -681,6 +658,9 @@ impl ThinkingLoop {
             .flatten()
             .and_then(|s| s.parse().ok());
 
+        // ── Fetch active goals ──
+        let active_goals = self.db.get_active_goals().unwrap_or_default();
+
         let think_context = prompts::ThinkContext {
             snapshot,
             recent_thoughts: &recent,
@@ -695,6 +675,7 @@ impl ThinkingLoop {
             },
             reward_breakdown: reward_breakdown.clone(),
             beliefs: beliefs.clone(),
+            goals: active_goals,
             last_cycle_at,
         };
 
@@ -793,25 +774,27 @@ impl ThinkingLoop {
             let code_system_prompt =
                 prompts::adaptive_system_prompt(code_mode, &self.config, Some(&think_context));
 
-            // Bridge: append phase 1 output as model message, then a user message entering Code mode
-            conversation.push(ConversationMessage {
-                role: "model".to_string(),
-                parts: vec![ConversationPart::Text(final_text.clone())],
-            });
-            conversation.push(ConversationMessage {
+            // Fresh conversation for Phase 2 — don't re-send Phase 1's tool results
+            let phase1_summary = if final_text.len() > 2000 {
+                format!("{}...", &final_text[..2000])
+            } else {
+                final_text.clone()
+            };
+            let mut phase2_conversation = vec![ConversationMessage {
                 role: "user".to_string(),
-                parts: vec![ConversationPart::Text(
-                    "You are now in CODE mode. Proceed with the action you described above. \
-                     Use edit_file, write_file, and commit_changes tools."
-                        .to_string(),
-                )],
-            });
+                parts: vec![ConversationPart::Text(format!(
+                    "Phase 1 (Observe) concluded:\n{}\n\n\
+                     You are now in CODE mode. Proceed with the action described above. \
+                     Use edit_file, write_file, and commit_changes tools.",
+                    phase1_summary
+                ))],
+            }];
 
-            let code_budget = self.config.max_tool_calls.max(50);
+            let code_budget = self.config.max_tool_calls;
             let phase2_result = run_tool_loop_with_model(
                 llm,
                 &code_system_prompt,
-                &mut conversation,
+                &mut phase2_conversation,
                 &code_tools,
                 &self.tool_executor,
                 &self.db,
@@ -834,13 +817,16 @@ impl ThinkingLoop {
             let reflect_system =
                 prompts::adaptive_system_prompt(reflect_mode, &self.config, Some(&think_context));
 
-            conversation.push(ConversationMessage {
-                role: "model".to_string(),
-                parts: vec![ConversationPart::Text(final_text.clone())],
-            });
             // Build reflection context: what was just changed + current reward signal
-            let mut reflect_context =
-                String::from("Code phase complete. REFLECT on what just happened.\n\n");
+            let phase2_summary = if final_text.len() > 1000 {
+                format!("{}...", &final_text[..1000])
+            } else {
+                final_text.clone()
+            };
+            let mut reflect_context = format!(
+                "Code phase result:\n{}\n\nREFLECT on what just happened.\n\n",
+                phase2_summary
+            );
 
             // Include the most recent mutation
             if let Ok(mutations) = self.db.recent_mutations(1) {
@@ -880,22 +866,65 @@ impl ThinkingLoop {
                 reflect_context.push_str(&format!("Reward signal: {:.2}\n\n", rb.total_reward));
             }
 
+            // Include active goals with endpoint reward signal matching
+            let reflect_goals = self.db.get_active_goals().unwrap_or_default();
+            if !reflect_goals.is_empty() {
+                reflect_context.push_str("Active goals:\n");
+                for g in &reflect_goals {
+                    let mut signals = Vec::new();
+                    // Match goal description against endpoint reward signals
+                    if let Some(ref rb) = reward_breakdown {
+                        let desc_lower = g.description.to_lowercase();
+                        for slug in &rb.new_endpoints {
+                            if desc_lower.contains(&slug.to_lowercase()) {
+                                signals.push(format!("NEW endpoint '{slug}'"));
+                            }
+                        }
+                        for slug in &rb.growing_endpoints {
+                            if desc_lower.contains(&slug.to_lowercase()) {
+                                signals.push(format!("GROWING '{slug}'"));
+                            }
+                        }
+                        for slug in &rb.stagnant_endpoints {
+                            if desc_lower.contains(&slug.to_lowercase()) {
+                                signals.push(format!("STAGNANT '{slug}'"));
+                            }
+                        }
+                    }
+                    let signal_str = if signals.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" → {}", signals.join(", "))
+                    };
+                    reflect_context.push_str(&format!(
+                        "- [P{}] {} (id:{}){}\n",
+                        g.priority,
+                        g.description,
+                        &g.id[..g.id.len().min(8)],
+                        signal_str,
+                    ));
+                }
+                reflect_context.push('\n');
+            }
+
             reflect_context.push_str(
                 "VERIFY: use check_self to check health and analytics. \
-                 Did your changes move the needle? Record what you learned with update_memory. \
+                 Did your changes advance any active goals? If so, update_goal with progress or complete_goal. \
+                 Record what you learned with update_memory. \
                  End with [STRATEGY] followed by what you plan to do next cycle. \
                  Keep it brief.",
             );
 
-            conversation.push(ConversationMessage {
+            // Fresh conversation for Phase 3 — don't re-send Phase 1+2's tool results
+            let mut phase3_conversation = vec![ConversationMessage {
                 role: "user".to_string(),
                 parts: vec![ConversationPart::Text(reflect_context)],
-            });
+            }];
 
             let phase3_result = run_tool_loop_with_model(
                 llm,
                 &reflect_system,
-                &mut conversation,
+                &mut phase3_conversation,
                 &reflect_tools,
                 &self.tool_executor,
                 &self.db,
@@ -1254,6 +1283,132 @@ impl ThinkingLoop {
             }
             ModelUpdate::Confirm { id } => self.db.confirm_belief(id),
             ModelUpdate::Invalidate { id, reason } => self.db.invalidate_belief(id, reason),
+            // ── Goal operations ──
+            ModelUpdate::CreateGoal {
+                description,
+                success_criteria,
+                priority,
+                parent_goal_id,
+            } => {
+                use crate::world_model::{Goal, GoalStatus};
+                let goal = Goal {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    description: description.clone(),
+                    status: GoalStatus::Active,
+                    priority: *priority,
+                    success_criteria: success_criteria.clone(),
+                    progress_notes: String::new(),
+                    parent_goal_id: parent_goal_id.clone(),
+                    retry_count: 0,
+                    created_at: now,
+                    updated_at: now,
+                    completed_at: None,
+                };
+                // Cap at 10 active goals to prevent goal sprawl
+                let active_count = self.db.get_active_goals().map(|g| g.len()).unwrap_or(0);
+                if active_count >= 10 {
+                    tracing::warn!("Goal cap reached (10 active) — refusing create_goal");
+                    return Ok(false);
+                }
+                self.db.insert_goal(&goal)?;
+                tracing::info!(goal_id = %goal.id, %description, "Goal created");
+                Ok(true)
+            }
+            ModelUpdate::UpdateGoal {
+                goal_id,
+                progress_notes,
+                status,
+            } => {
+                let status_str = status.as_deref();
+                let notes_str = progress_notes.as_deref();
+                self.db.update_goal(goal_id, status_str, notes_str, None)
+            }
+            ModelUpdate::CompleteGoal { goal_id, outcome } => {
+                // Fetch goal description before completing
+                let goal_desc = self
+                    .db
+                    .get_goal(goal_id)
+                    .ok()
+                    .flatten()
+                    .map(|g| g.description.clone())
+                    .unwrap_or_default();
+
+                let notes = if outcome.is_empty() {
+                    None
+                } else {
+                    Some(outcome.as_str())
+                };
+                let result = self
+                    .db
+                    .update_goal(goal_id, Some("completed"), notes, Some(now));
+
+                // Record high-salience Decision thought for completed goals
+                if matches!(result, Ok(true)) && !goal_desc.is_empty() {
+                    let content = format!(
+                        "[GOAL COMPLETED] {}: {}",
+                        goal_desc,
+                        if outcome.is_empty() { "done" } else { outcome }
+                    );
+                    let thought = Thought {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        thought_type: ThoughtType::Decision,
+                        content,
+                        context: Some(format!("goal_id:{goal_id}")),
+                        created_at: now,
+                        salience: None,
+                        memory_tier: None,
+                        strength: None,
+                    };
+                    // High salience — successful goal completion is very memorable
+                    let _ = self.db.insert_thought_with_salience(
+                        &thought,
+                        0.85,
+                        r#"{"novelty":0.5,"prediction_error":0.0,"reward_signal":0.8,"recency_boost":0.1,"reinforcement":0.0}"#,
+                        "long_term",
+                        1.0,
+                        None,
+                    );
+                }
+                result
+            }
+            ModelUpdate::AbandonGoal { goal_id, reason } => {
+                let goal_desc = self
+                    .db
+                    .get_goal(goal_id)
+                    .ok()
+                    .flatten()
+                    .map(|g| g.description.clone())
+                    .unwrap_or_default();
+
+                let result = self
+                    .db
+                    .update_goal(goal_id, Some("abandoned"), Some(reason.as_str()), Some(now));
+
+                // Record moderate-salience Decision thought for abandoned goals (learn from failure)
+                if matches!(result, Ok(true)) && !goal_desc.is_empty() {
+                    let content =
+                        format!("[GOAL ABANDONED] {}: {}", goal_desc, reason);
+                    let thought = Thought {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        thought_type: ThoughtType::Decision,
+                        content,
+                        context: Some(format!("goal_id:{goal_id}")),
+                        created_at: now,
+                        salience: None,
+                        memory_tier: None,
+                        strength: None,
+                    };
+                    let _ = self.db.insert_thought_with_salience(
+                        &thought,
+                        0.6,
+                        r#"{"novelty":0.3,"prediction_error":0.3,"reward_signal":0.0,"recency_boost":0.1,"reinforcement":0.0}"#,
+                        "working",
+                        1.0,
+                        None,
+                    );
+                }
+                result
+            }
         }
     }
 }
@@ -1321,7 +1476,7 @@ pub(crate) async fn run_tool_loop_with_model(
     conversation: &mut Vec<ConversationMessage>,
     tool_declarations: &[FunctionDeclaration],
     tool_executor: &ToolExecutor,
-    db: &Arc<SoulDatabase>,
+    _db: &Arc<SoulDatabase>,
     max_tool_calls: u32,
     use_deep: bool,
 ) -> Result<ToolLoopResult, SoulError> {
@@ -1369,21 +1524,8 @@ pub(crate) async fn run_tool_loop_with_model(
                     }
                 };
 
-                // Record tool execution as a thought
-                let tool_summary = summarize_tool_call(&fc.name, &fc.args);
-                let tool_thought = Thought {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    thought_type: ThoughtType::ToolExecution,
-                    content: tool_summary.clone(),
-                    context: Some(serde_json::to_string(&tool_result).unwrap_or_default()),
-                    created_at: chrono::Utc::now().timestamp(),
-                    salience: None,
-                    memory_tier: None,
-                    strength: None,
-                };
-                db.insert_thought(&tool_thought)?;
-
                 // Record for return value
+                let tool_summary = summarize_tool_call(&fc.name, &fc.args);
                 tool_executions.push(ToolExecution {
                     command: tool_summary,
                     stdout: tool_result.stdout.clone(),
