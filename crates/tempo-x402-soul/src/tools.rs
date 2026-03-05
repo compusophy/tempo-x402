@@ -176,12 +176,41 @@ impl ToolExecutor {
                     .get("message")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "missing 'message' argument".to_string())?;
-                let files = args
-                    .get("files")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| "missing 'files' argument (must be array)".to_string())?;
-                let file_strs: Vec<&str> = files.iter().filter_map(|v| v.as_str()).collect();
-                self.commit_changes(message, &file_strs).await
+                // If files not provided, auto-detect all changed files via git
+                let file_strs: Vec<String> = if let Some(files) = args.get("files").and_then(|v| v.as_array()) {
+                    files.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+                } else {
+                    // Auto-detect: git diff --name-only + git ls-files --others --exclude-standard
+                    let ws = self.workspace_root.to_string_lossy();
+                    let modified = tokio::process::Command::new("git")
+                        .args(["diff", "--name-only"])
+                        .current_dir(&*ws)
+                        .output()
+                        .await
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                        .unwrap_or_default();
+                    let untracked = tokio::process::Command::new("git")
+                        .args(["ls-files", "--others", "--exclude-standard"])
+                        .current_dir(&*ws)
+                        .output()
+                        .await
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                        .unwrap_or_default();
+                    modified.lines().chain(untracked.lines())
+                        .filter(|l| !l.is_empty())
+                        .map(String::from)
+                        .collect()
+                };
+                if file_strs.is_empty() {
+                    return Ok(ToolResult {
+                        stdout: "nothing to commit — no changed files detected".to_string(),
+                        stderr: String::new(),
+                        exit_code: 0,
+                        duration_ms: 0,
+                    });
+                }
+                let refs: Vec<&str> = file_strs.iter().map(|s| s.as_str()).collect();
+                self.commit_changes(message, &refs).await
             }
             "propose_to_main" => {
                 let title = args
@@ -1511,7 +1540,7 @@ pub fn available_tools_with_git(coding_enabled: bool) -> Vec<FunctionDeclaration
     if coding_enabled {
         tools.push(FunctionDeclaration {
             name: "commit_changes".to_string(),
-            description: "Validate and commit file changes. Runs cargo check + cargo test before committing. Changes go to the vm/<instance-id> branch.".to_string(),
+            description: "Validate and commit file changes. Runs cargo check + cargo test before committing. If files omitted, auto-detects all changed files.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1522,10 +1551,10 @@ pub fn available_tools_with_git(coding_enabled: bool) -> Vec<FunctionDeclaration
                     "files": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Array of file paths to stage and commit"
+                        "description": "Array of file paths to stage and commit. If omitted, all changed files are auto-detected."
                     }
                 },
-                "required": ["message", "files"]
+                "required": ["message"]
             }),
         });
 
