@@ -453,6 +453,31 @@ impl ThinkingLoop {
                     "Step succeeded"
                 );
 
+                // Record plan progress as a thought so it's visible in dashboard
+                let goal_desc = self
+                    .db
+                    .get_goal(&plan.goal_id)
+                    .ok()
+                    .flatten()
+                    .map(|g| g.description.clone());
+                let progress_content = format!(
+                    "[step {}/{}] {} — {}",
+                    plan.current_step,
+                    plan.steps.len(),
+                    goal_desc.as_deref().unwrap_or("plan"),
+                    step_summary,
+                );
+                let _ = self.db.insert_thought(&Thought {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    thought_type: ThoughtType::Reasoning,
+                    content: progress_content,
+                    context: None,
+                    created_at: chrono::Utc::now().timestamp(),
+                    salience: None,
+                    memory_tier: None,
+                    strength: None,
+                });
+
                 self.increment_cycle_count()?;
                 Ok(CycleResult {
                     step_type: if is_llm {
@@ -680,6 +705,29 @@ impl ThinkingLoop {
                     status = plan.status.as_str(),
                     "Plan created"
                 );
+
+                // Record plan creation as a visible thought
+                let step_summaries: Vec<String> = plan
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  {}. {}", i + 1, s.summary()))
+                    .collect();
+                let _ = self.db.insert_thought(&Thought {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    thought_type: ThoughtType::Decision,
+                    content: format!(
+                        "New plan for: {}\n{}",
+                        goal.description,
+                        step_summaries.join("\n")
+                    ),
+                    context: None,
+                    created_at: chrono::Utc::now().timestamp(),
+                    salience: None,
+                    memory_tier: None,
+                    strength: None,
+                });
+
                 Ok(Some(plan))
             }
             Err(e) => {
