@@ -483,105 +483,119 @@ impl ThinkingLoop {
     }
 
     /// Record observation and sync auto-beliefs.
+    /// Only records a thought when state actually changes (delta detection).
     fn observe(&self, snapshot: &NodeSnapshot, pacer: &AdaptivePacer) -> Result<(), SoulError> {
         let snapshot_json = serde_json::to_string(snapshot)?;
         let neuroplastic = self.config.neuroplastic_enabled;
 
-        // Prediction error
-        let prediction_error = if neuroplastic {
-            match self.db.get_last_prediction() {
-                Ok(Some(pred_json)) => {
-                    match serde_json::from_str::<neuroplastic::Prediction>(&pred_json) {
-                        Ok(pred) => neuroplastic::compute_prediction_error(&pred, snapshot),
-                        Err(_) => 0.0,
+        // Delta detection — skip recording identical observations
+        let state_changed = match &pacer.prev_snapshot {
+            Some(prev) => {
+                prev.total_payments != snapshot.total_payments
+                    || prev.endpoint_count != snapshot.endpoint_count
+                    || prev.children_count != snapshot.children_count
+                    || prev.total_revenue != snapshot.total_revenue
+            }
+            None => true, // First observation always recorded
+        };
+
+        if state_changed {
+            // Prediction error
+            let prediction_error = if neuroplastic {
+                match self.db.get_last_prediction() {
+                    Ok(Some(pred_json)) => {
+                        match serde_json::from_str::<neuroplastic::Prediction>(&pred_json) {
+                            Ok(pred) => neuroplastic::compute_prediction_error(&pred, snapshot),
+                            Err(_) => 0.0,
+                        }
                     }
+                    _ => 0.0,
                 }
-                _ => 0.0,
+            } else {
+                0.0
+            };
+
+            // Generate new prediction (only when state changed)
+            if neuroplastic {
+                let new_pred =
+                    neuroplastic::generate_prediction(snapshot, pacer.prev_snapshot.as_ref());
+                if let Ok(pred_json) = serde_json::to_string(&new_pred) {
+                    let pred_thought = Thought {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        thought_type: ThoughtType::Prediction,
+                        content: format!(
+                            "Predicted: payments={}, revenue={:.2}, endpoints={}, children={} (confidence {:.0}%)",
+                            new_pred.expected_payments,
+                            new_pred.expected_revenue,
+                            new_pred.expected_endpoint_count,
+                            new_pred.expected_children_count,
+                            new_pred.confidence * 100.0
+                        ),
+                        context: Some(pred_json.clone()),
+                        created_at: chrono::Utc::now().timestamp(),
+                        salience: Some(0.3),
+                        memory_tier: Some("working".to_string()),
+                        strength: Some(1.0),
+                    };
+                    let _ = self.db.insert_thought_with_salience(
+                        &pred_thought,
+                        0.3,
+                        "{}",
+                        "working",
+                        1.0,
+                        None,
+                    );
+                    let _ = self.db.store_prediction(&pred_json);
+                }
             }
-        } else {
-            0.0
-        };
 
-        // Generate new prediction
-        if neuroplastic {
-            let new_pred =
-                neuroplastic::generate_prediction(snapshot, pacer.prev_snapshot.as_ref());
-            if let Ok(pred_json) = serde_json::to_string(&new_pred) {
-                let pred_thought = Thought {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    thought_type: ThoughtType::Prediction,
-                    content: format!(
-                        "Predicted: payments={}, revenue={:.2}, endpoints={}, children={} (confidence {:.0}%)",
-                        new_pred.expected_payments,
-                        new_pred.expected_revenue,
-                        new_pred.expected_endpoint_count,
-                        new_pred.expected_children_count,
-                        new_pred.confidence * 100.0
-                    ),
-                    context: Some(pred_json.clone()),
-                    created_at: chrono::Utc::now().timestamp(),
-                    salience: Some(0.3),
-                    memory_tier: Some("working".to_string()),
-                    strength: Some(1.0),
-                };
-                let _ = self.db.insert_thought_with_salience(
-                    &pred_thought,
-                    0.3,
-                    "{}",
-                    "working",
-                    1.0,
-                    None,
-                );
-                let _ = self.db.store_prediction(&pred_json);
-            }
-        }
-
-        // Record observation
-        let obs_content = format!(
-            "Node state captured (uptime {}h, {} endpoints, {} payments)",
-            snapshot.uptime_secs / 3600,
-            snapshot.endpoint_count,
-            snapshot.total_payments,
-        );
-
-        let obs_thought = Thought {
-            id: uuid::Uuid::new_v4().to_string(),
-            thought_type: ThoughtType::Observation,
-            content: obs_content.clone(),
-            context: Some(snapshot_json),
-            created_at: chrono::Utc::now().timestamp(),
-            salience: None,
-            memory_tier: None,
-            strength: None,
-        };
-
-        if neuroplastic {
-            let fp = neuroplastic::content_fingerprint(&obs_content);
-            let _ = self.db.increment_pattern(&fp);
-            let pattern_counts = self.db.get_pattern_counts(&[fp]).unwrap_or_default();
-            let (salience, factors) = neuroplastic::compute_salience(
-                &ThoughtType::Observation,
-                &obs_content,
-                snapshot,
-                pacer.prev_snapshot.as_ref(),
-                prediction_error,
-                &pattern_counts,
+            // Record observation
+            let obs_content = format!(
+                "Node state captured (uptime {}h, {} endpoints, {} payments)",
+                snapshot.uptime_secs / 3600,
+                snapshot.endpoint_count,
+                snapshot.total_payments,
             );
-            let tier = neuroplastic::initial_tier(&ThoughtType::Observation, salience);
-            let factors_json = serde_json::to_string(&factors).unwrap_or_default();
-            self.db.insert_thought_with_salience(
-                &obs_thought,
-                salience,
-                &factors_json,
-                tier.as_str(),
-                1.0,
-                Some(prediction_error),
-            )?;
-        } else {
-            self.db.insert_thought(&obs_thought)?;
+
+            let obs_thought = Thought {
+                id: uuid::Uuid::new_v4().to_string(),
+                thought_type: ThoughtType::Observation,
+                content: obs_content.clone(),
+                context: Some(snapshot_json),
+                created_at: chrono::Utc::now().timestamp(),
+                salience: None,
+                memory_tier: None,
+                strength: None,
+            };
+
+            if neuroplastic {
+                let fp = neuroplastic::content_fingerprint(&obs_content);
+                let _ = self.db.increment_pattern(&fp);
+                let pattern_counts = self.db.get_pattern_counts(&[fp]).unwrap_or_default();
+                let (salience, factors) = neuroplastic::compute_salience(
+                    &ThoughtType::Observation,
+                    &obs_content,
+                    snapshot,
+                    pacer.prev_snapshot.as_ref(),
+                    prediction_error,
+                    &pattern_counts,
+                );
+                let tier = neuroplastic::initial_tier(&ThoughtType::Observation, salience);
+                let factors_json = serde_json::to_string(&factors).unwrap_or_default();
+                self.db.insert_thought_with_salience(
+                    &obs_thought,
+                    salience,
+                    &factors_json,
+                    tier.as_str(),
+                    1.0,
+                    Some(prediction_error),
+                )?;
+            } else {
+                self.db.insert_thought(&obs_thought)?;
+            }
         }
 
-        // Sync auto-beliefs from snapshot (ground truth)
+        // Sync auto-beliefs from snapshot (ground truth) — always
         self.sync_auto_beliefs(snapshot);
 
         Ok(())
@@ -869,6 +883,25 @@ impl ThinkingLoop {
             plan.status = PlanStatus::Failed;
             self.db.update_plan(plan)?;
             let _ = self.db.set_state("active_plan_id", "");
+
+            // Write failure to persistent memory so we don't repeat the same mistake
+            let goal_desc = self
+                .db
+                .get_goal(&plan.goal_id)
+                .ok()
+                .flatten()
+                .map(|g| g.description.clone())
+                .unwrap_or_else(|| "unknown goal".to_string());
+            let failure_note = format!(
+                "\n## Failed: {}\n- Step: {}\n- Error: {}\n- Plan had {} replans. Do NOT retry this exact approach.\n",
+                goal_desc, step_desc, error, plan.replan_count
+            );
+            let _ = crate::persistent_memory::append_if_room(
+                &self.config.memory_file_path,
+                &failure_note,
+            );
+            tracing::info!("Wrote plan failure to persistent memory");
+
             self.increment_cycle_count()?;
             return Ok(CycleResult {
                 step_type: StepType::Llm,
@@ -930,12 +963,28 @@ impl ThinkingLoop {
     }
 
     /// Parse plan steps from LLM output (find JSON array).
+    /// Includes normalization to handle common LLM format mistakes.
     fn parse_plan_steps(&self, text: &str) -> Result<Vec<PlanStep>, SoulError> {
+        let try_parse = |json_str: &str| -> Result<Vec<PlanStep>, serde_json::Error> {
+            // First try direct parse
+            match serde_json::from_str::<Vec<PlanStep>>(json_str) {
+                Ok(steps) => Ok(steps),
+                Err(direct_err) => {
+                    // Normalize common LLM mistakes and retry
+                    let normalized = Self::normalize_plan_json(json_str);
+                    if normalized != json_str {
+                        serde_json::from_str::<Vec<PlanStep>>(&normalized)
+                    } else {
+                        Err(direct_err)
+                    }
+                }
+            }
+        };
+
         // Try to find a JSON array in the response
         if let Some((json_str, _, _)) = extract_json_array(text) {
-            match serde_json::from_str::<Vec<PlanStep>>(&json_str) {
+            match try_parse(&json_str) {
                 Ok(mut steps) => {
-                    // Enforce max steps
                     let max = self.config.max_plan_steps;
                     if steps.len() > max {
                         steps.truncate(max);
@@ -952,7 +1001,7 @@ impl ThinkingLoop {
         }
 
         // Fallback: try parsing the entire text as JSON
-        match serde_json::from_str::<Vec<PlanStep>>(text.trim()) {
+        match try_parse(text.trim()) {
             Ok(mut steps) => {
                 let max = self.config.max_plan_steps;
                 if steps.len() > max {
@@ -969,6 +1018,108 @@ impl ThinkingLoop {
                 &text[..text.len().min(200)]
             ))),
         }
+    }
+
+    /// Normalize common LLM plan JSON mistakes into valid PlanStep format.
+    /// The LLM often outputs {"action": "ls", "name": "explore"} instead of
+    /// {"type": "run_shell", "command": "ls"}.
+    fn normalize_plan_json(json_str: &str) -> String {
+        let parsed: Vec<serde_json::Value> = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(_) => return json_str.to_string(),
+        };
+
+        let normalized: Vec<serde_json::Value> = parsed
+            .into_iter()
+            .filter_map(|mut obj| {
+                let map = obj.as_object_mut()?;
+
+                // Already has a valid "type" field — leave it alone
+                if map.contains_key("type") {
+                    return Some(obj);
+                }
+
+                // Infer type from other fields the LLM commonly uses
+                let action = map
+                    .get("action")
+                    .or_else(|| map.get("command"))
+                    .or_else(|| map.get("cmd"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                if let Some(action_str) = action {
+                    let mut step = serde_json::Map::new();
+                    let action_lower = action_str.to_lowercase();
+
+                    if action_lower.starts_with("ls")
+                        || action_lower.starts_with("find ")
+                        || action_lower.starts_with("tree")
+                    {
+                        // Directory listing
+                        if action_lower == "ls" || action_lower.starts_with("ls ") {
+                            let path = action_str.strip_prefix("ls").unwrap_or(".").trim();
+                            let path = if path.is_empty() || path == "-F" || path == "-la" {
+                                "."
+                            } else {
+                                path.trim_start_matches("-F ")
+                                    .trim_start_matches("-la ")
+                                    .trim()
+                            };
+                            step.insert("type".to_string(), serde_json::json!("list_dir"));
+                            step.insert("path".to_string(), serde_json::json!(path));
+                        } else {
+                            step.insert("type".to_string(), serde_json::json!("run_shell"));
+                            step.insert("command".to_string(), serde_json::json!(action_str));
+                        }
+                    } else if action_lower.starts_with("cat ") || action_lower.starts_with("read ")
+                    {
+                        let path = action_str.split_once(' ').map(|x| x.1).unwrap_or("");
+                        step.insert("type".to_string(), serde_json::json!("read_file"));
+                        step.insert("path".to_string(), serde_json::json!(path));
+                    } else if action_lower.starts_with("grep ") || action_lower.starts_with("rg ") {
+                        step.insert("type".to_string(), serde_json::json!("run_shell"));
+                        step.insert("command".to_string(), serde_json::json!(action_str));
+                    } else {
+                        // Default: treat as shell command
+                        step.insert("type".to_string(), serde_json::json!("run_shell"));
+                        step.insert("command".to_string(), serde_json::json!(action_str));
+                    }
+
+                    // Carry over store_as if present
+                    if let Some(store) = map.get("store_as").or_else(|| map.get("name")) {
+                        step.insert("store_as".to_string(), store.clone());
+                    }
+
+                    return Some(serde_json::Value::Object(step));
+                }
+
+                // Has "path" but no type — probably a read_file
+                if let Some(path) = map.get("path").and_then(|v| v.as_str()) {
+                    let mut step = serde_json::Map::new();
+                    step.insert("type".to_string(), serde_json::json!("read_file"));
+                    step.insert("path".to_string(), serde_json::json!(path));
+                    if let Some(store) = map.get("store_as") {
+                        step.insert("store_as".to_string(), store.clone());
+                    }
+                    return Some(serde_json::Value::Object(step));
+                }
+
+                // Has "question" but no type — probably a think
+                if let Some(q) = map.get("question").and_then(|v| v.as_str()) {
+                    let mut step = serde_json::Map::new();
+                    step.insert("type".to_string(), serde_json::json!("think"));
+                    step.insert("question".to_string(), serde_json::json!(q));
+                    if let Some(store) = map.get("store_as") {
+                        step.insert("store_as".to_string(), store.clone());
+                    }
+                    return Some(serde_json::Value::Object(step));
+                }
+
+                None // Unrecognizable step — skip it
+            })
+            .collect();
+
+        serde_json::to_string(&normalized).unwrap_or_else(|_| json_str.to_string())
     }
 
     /// Increment the total_think_cycles counter, cycles_since_last_commit, and update last_think_at.

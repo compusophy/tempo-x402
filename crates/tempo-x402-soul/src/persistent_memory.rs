@@ -75,6 +75,25 @@ pub fn read_or_seed(path: &str) -> Result<String, String> {
     }
 }
 
+/// Append text to persistent memory if there's room. Silently truncates if it would exceed cap.
+/// Returns Ok(true) if appended, Ok(false) if no room.
+pub fn append_if_room(path: &str, text: &str) -> Result<bool, String> {
+    let current = std::fs::read_to_string(path).unwrap_or_default();
+    let new_content = format!("{}{}", current, text);
+    if new_content.len() > MAX_MEMORY_BYTES {
+        // Try to make room by trimming the appended text
+        let budget = MAX_MEMORY_BYTES.saturating_sub(current.len());
+        if budget < 50 {
+            return Ok(false); // Not enough room for anything meaningful
+        }
+        let truncated = &text[..text.len().min(budget)];
+        let trimmed = format!("{}{}", current, truncated);
+        update(path, &trimmed).map(|_| true)
+    } else {
+        update(path, &new_content).map(|_| true)
+    }
+}
+
 /// Update the persistent memory file. Rejects content exceeding MAX_MEMORY_BYTES.
 pub fn update(path: &str, content: &str) -> Result<usize, String> {
     if content.len() > MAX_MEMORY_BYTES {
