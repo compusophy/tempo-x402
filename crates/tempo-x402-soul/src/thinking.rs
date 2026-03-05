@@ -189,14 +189,28 @@ impl ThinkingLoop {
                 }
             };
 
-            let cycle_result = match self.plan_cycle(&snapshot, &pacer).await {
-                Ok(result) => result,
-                Err(e) => {
+            // Hard timeout on entire cycle to prevent infinite hangs (10 min max)
+            let cycle_result = match tokio::time::timeout(
+                std::time::Duration::from_secs(600),
+                self.plan_cycle(&snapshot, &pacer),
+            )
+            .await
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => {
                     tracing::warn!(error = %e, "Soul plan cycle failed");
                     CycleResult {
                         step_type: StepType::Observe,
                         entered_code: false,
                         summary: format!("error: {e}"),
+                    }
+                }
+                Err(_) => {
+                    tracing::error!("Soul plan cycle timed out after 600s — forcing next cycle");
+                    CycleResult {
+                        step_type: StepType::Observe,
+                        entered_code: false,
+                        summary: "cycle timed out after 600s".to_string(),
                     }
                 }
             };
@@ -1643,12 +1657,26 @@ pub(crate) async fn run_tool_loop_with_model(
     let mut tool_executions = Vec::new();
 
     for _ in 0..=max_tool_calls {
-        let result = if use_deep {
-            llm.think_deep_with_tools(system_prompt, conversation, tool_declarations)
-                .await?
+        // Hard timeout per LLM call to prevent infinite hangs
+        let llm_result = if use_deep {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                llm.think_deep_with_tools(system_prompt, conversation, tool_declarations),
+            )
+            .await
         } else {
-            llm.think_with_tools(system_prompt, conversation, tool_declarations)
-                .await?
+            tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                llm.think_with_tools(system_prompt, conversation, tool_declarations),
+            )
+            .await
+        };
+        let result = match llm_result {
+            Ok(r) => r?,
+            Err(_) => {
+                tracing::warn!("LLM call timed out after 120s");
+                break;
+            }
         };
 
         match result {
