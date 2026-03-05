@@ -667,8 +667,8 @@ impl ThinkingLoop {
             "Creating plan for goal"
         );
 
-        // Get workspace listing for context
-        let workspace_listing = match self
+        // Get deep workspace listing for context — show routes dir where endpoints live
+        let top_listing = match self
             .tool_executor
             .execute(
                 "list_directory",
@@ -679,6 +679,34 @@ impl ThinkingLoop {
             Ok(r) => r.stdout,
             Err(_) => "workspace listing unavailable".to_string(),
         };
+
+        // Also list the routes directory (where the soul adds endpoints)
+        let routes_listing = match self
+            .tool_executor
+            .execute(
+                "list_directory",
+                &serde_json::json!({ "path": format!("{}/crates/tempo-x402-node/src/routes", self.config.workspace_root) }),
+            )
+            .await
+        {
+            Ok(r) => format!("\n\ncrates/tempo-x402-node/src/routes/:\n{}", r.stdout),
+            Err(_) => String::new(),
+        };
+
+        // Read routes/mod.rs to show what modules exist
+        let routes_mod = match self
+            .tool_executor
+            .execute(
+                "read_file",
+                &serde_json::json!({ "path": format!("{}/crates/tempo-x402-node/src/routes/mod.rs", self.config.workspace_root) }),
+            )
+            .await
+        {
+            Ok(r) => format!("\n\ncrates/tempo-x402-node/src/routes/mod.rs:\n{}", r.stdout),
+            Err(_) => String::new(),
+        };
+
+        let workspace_listing = format!("{}{}{}", top_listing, routes_listing, routes_mod);
 
         let recent_errors = self.get_recent_errors();
         let prompt = prompts::planning_prompt(goal, &workspace_listing, nudges, &recent_errors);
@@ -764,14 +792,19 @@ impl ThinkingLoop {
             let now = chrono::Utc::now().timestamp();
             let seed_goals = [
                 (
-                    "Create a utility API endpoint (e.g., keccak256 hashing) in routes/utils.rs and register it on the gateway",
-                    "Endpoint responds to requests and is visible in /endpoints",
+                    "Create a simple JSON utility endpoint in crates/tempo-x402-node/src/routes/utils.rs: \
+                     a POST /utils/base64 endpoint that accepts {\"input\": \"...\", \"action\": \"encode|decode\"} \
+                     and returns the base64 encoded/decoded result. Read utils.rs first to see the existing pattern, \
+                     then add the handler and update the configure function.",
+                    "POST /utils/base64 responds correctly, cargo check passes, commit lands",
                     5u32,
                 ),
                 (
-                    "Verify node health: check all existing endpoints are reachable, confirm analytics tracking works",
-                    "check_self health returns ok, all registered endpoints respond",
-                    3u32,
+                    "Read the codebase structure: list crates/tempo-x402-node/src/routes/, \
+                     read utils.rs and main.rs to understand the endpoint pattern, \
+                     then record what you learned in update_memory",
+                    "Memory file contains accurate codebase architecture notes",
+                    4u32,
                 ),
             ];
             for (desc, criteria, priority) in &seed_goals {

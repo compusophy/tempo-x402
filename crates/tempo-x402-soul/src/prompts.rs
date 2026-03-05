@@ -205,6 +205,24 @@ pub fn planning_prompt(
          Progress so far: {}\n\n\
          # Workspace\n\
          {}{}\n\n\
+         # Architecture — How to Add Endpoints\n\
+         Your node is an actix-web server. New utility endpoints go in `crates/tempo-x402-node/src/routes/utils.rs`.\n\
+         Pattern for adding a new endpoint:\n\
+         1. Read `crates/tempo-x402-node/src/routes/utils.rs` (store_as: utils_code) — see existing endpoints\n\
+         2. Read `crates/tempo-x402-node/src/main.rs` (store_as: main_code) — see how routes are registered\n\
+         3. Edit `crates/tempo-x402-node/src/routes/utils.rs` to add your new handler function + configure entry\n\
+         4. If the endpoint needs to be registered with the gateway, edit `main.rs` to add it to auto_register_endpoints()\n\
+         5. Commit\n\n\
+         Existing pattern (from utils.rs):\n\
+         ```rust\n\
+         #[get(\"/your-endpoint\")]\n\
+         pub async fn your_endpoint(state: web::Data<NodeState>) -> impl Responder {{\n\
+             HttpResponse::Ok().json(serde_json::json!({{ \"result\": \"...\" }}))\n\
+         }}\n\
+         // Then add `.service(your_endpoint)` in the `configure` fn at the bottom of utils.rs\n\
+         ```\n\n\
+         Available imports in utils.rs: actix_web, alloy (crypto/chain), serde, serde_json, NodeState.\n\
+         You CANNOT modify Cargo.toml, so only use dependencies already in the workspace.\n\n\
          # Task\n\
          Create a step-by-step plan to achieve this goal. Each step is one of:\n\n\
          Mechanical (no LLM needed):\n\
@@ -219,11 +237,13 @@ pub fn planning_prompt(
          - {{\"type\": \"edit_code\", \"file_path\": \"...\", \"description\": \"...\", \"context_keys\": [\"key\"]}}\n\
          - {{\"type\": \"think\", \"question\": \"...\", \"store_as\": \"key\"}}\n\n\
          Rules:\n\
-         - Read files BEFORE editing them (use store_as to pass content to edit steps)\n\
+         - ALWAYS read files BEFORE editing them (use store_as to pass content to edit steps)\n\
          - End with a commit step\n\
-         - Max 20 steps\n\
+         - Max 20 steps, prefer fewer — a simple endpoint needs ~5 steps (read, read, edit, commit)\n\
          - Prefer edit_code over generate_code for existing files\n\
-         - Protected files (soul core, identity, Cargo.toml, Cargo.lock) cannot be modified\n\n\
+         - Protected files (soul core, identity, Cargo.toml, Cargo.lock) cannot be modified\n\
+         - Do NOT try to modify Dockerfile, railway.toml, or deployment configs — focus on Rust code\n\
+         - Use only dependencies already available in the workspace\n\n\
          Respond with ONLY a JSON array of steps, no other text.",
         goal.description,
         goal.success_criteria,
@@ -255,8 +275,13 @@ pub fn code_generation_prompt(
          # Task\n\
          {description}\n\
          {context}\n\n\
-         Use write_file (new file) or edit_file (existing file) to make the change. \
-         Keep changes minimal and focused."
+         Rules:\n\
+         - Use edit_file for existing files (provide unique old_string and new_string)\n\
+         - Use write_file only for brand new files\n\
+         - Keep changes minimal and focused — add your code at the right location\n\
+         - For actix-web endpoints: add the handler function AND update the configure fn\n\
+         - Ensure all imports are at the top of the file\n\
+         - Do NOT rewrite the entire file — only add/change what's needed"
     )
 }
 
