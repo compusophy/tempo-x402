@@ -351,9 +351,6 @@ async fn main() -> std::io::Result<()> {
     };
 
     // ── Soul init (before NodeState so we can store the DB ref) ────────
-    let mind_enabled = x402_mind::MindConfig::is_enabled();
-    let mind_config = x402_mind::MindConfig::from_env();
-
     let (soul_db, soul_dormant, soul, soul_generation, soul_config_for_state) =
         match x402_soul::SoulConfig::from_env() {
             Ok(soul_config) => {
@@ -413,7 +410,6 @@ async fn main() -> std::io::Result<()> {
         soul_dormant,
         soul_config: soul_config_for_state,
         soul_observer: soul_observer.clone(),
-        mind_enabled,
     };
 
     let node_data = web::Data::new(node_state.clone());
@@ -429,15 +425,6 @@ async fn main() -> std::io::Result<()> {
                 generation = soul_generation,
                 "Soul spawned"
             );
-        }
-    }
-
-    // ── Mind spawn (subconscious background loop) ───────────────────
-    if mind_enabled {
-        if let Some(ref db) = node_state.soul_db {
-            let mind = x402_mind::Mind::new(db.clone(), mind_config);
-            mind.spawn();
-            tracing::info!("Mind spawned (subconscious background loop)");
         }
     }
 

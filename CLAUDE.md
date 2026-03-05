@@ -4,7 +4,7 @@
 
 x402 (HTTP 402 Payment Required) implementation for the **Tempo blockchain** using TIP-20 tokens (pathUSD). Pay-per-request API monetization where clients sign EIP-712 payment authorizations and a facilitator settles them on-chain.
 
-Rust workspace. Published as `tempo-x402`, `tempo-x402-server`, `tempo-x402-facilitator`, `tempo-x402-gateway`, `tempo-x402-wallet`, `tempo-x402-node`, `tempo-x402-identity`, `tempo-x402-agent`, `tempo-x402-soul`, `tempo-x402-mind` on crates.io.
+Rust workspace. Published as `tempo-x402`, `tempo-x402-server`, `tempo-x402-facilitator`, `tempo-x402-gateway`, `tempo-x402-wallet`, `tempo-x402-node`, `tempo-x402-identity`, `tempo-x402-agent`, `tempo-x402-soul` on crates.io.
 
 ## Architecture
 
@@ -28,8 +28,7 @@ crates/
 ├── tempo-x402-node/          # self-deploying node: gateway + identity + clone orchestration
 ├── tempo-x402-identity/      # wallet generation, persistence, faucet, parent registration
 ├── tempo-x402-agent/         # Railway API client + clone orchestration
-├── tempo-x402-soul/          # agentic thinking loop powered by Gemini 3 Flash + dynamic tool registry
-├── tempo-x402-mind/          # lateralized dual-soul: left (analytical) + right (holistic) + callosum
+├── tempo-x402-soul/          # agentic thinking loop powered by Gemini 3 Flash + nudge queue + stagnation detection
 ├── tempo-x402-app/           # Leptos WASM demo SPA (not published)
 └── tempo-x402-security-audit/# test-only: 15 security invariant checks (not published)
 ```
@@ -80,7 +79,6 @@ Each crate has its own `CLAUDE.md` with local context. Read that first when work
 | `SOUL_CODING_ENABLED` | node | Enable soul write/edit/commit tools (default: false) |
 | `SOUL_DYNAMIC_TOOLS_ENABLED` | node | Enable dynamic tool registry (default: false) |
 | `HEALTH_PROBE_INTERVAL_SECS` | node | Health probe interval in seconds (default: 300) |
-| `MIND_ENABLED` | node | Enable dual-soul architecture (default: false) |
 | `SOUL_FORK_REPO` | node | Fork repo for soul push (e.g. `compusophy-bot/tempo-x402`) |
 | `SOUL_UPSTREAM_REPO` | node | Upstream repo for soul PRs/issues (e.g. `compusophy/tempo-x402`) |
 | `SOUL_MEMORY_FILE` | soul | Path to persistent memory file (default: `/data/soul_memory.md`) |

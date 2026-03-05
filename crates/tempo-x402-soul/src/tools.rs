@@ -245,6 +245,29 @@ impl ToolExecutor {
                     .ok_or_else(|| "missing 'updates' argument (must be array)".to_string())?;
                 self.update_beliefs(updates).await
             }
+            "approve_plan" => {
+                let plan_id = args
+                    .get("plan_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'plan_id' argument".to_string())?;
+                self.approve_plan(plan_id).await
+            }
+            "reject_plan" => {
+                let plan_id = args
+                    .get("plan_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'plan_id' argument".to_string())?;
+                let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+                self.reject_plan(plan_id, reason).await
+            }
+            "request_plan" => {
+                let description = args
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'description' argument".to_string())?;
+                let priority = args.get("priority").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
+                self.request_plan(description, priority).await
+            }
             _ => {
                 // Check meta-tools and dynamic tools via registry
                 if let Some(ref registry) = self.registry {
@@ -733,10 +756,7 @@ impl ToolExecutor {
             "http://localhost:{}",
             std::env::var("PORT").unwrap_or_else(|_| "4023".to_string())
         );
-        let gateway_url = self
-            .gateway_url
-            .clone()
-            .unwrap_or(default_url);
+        let gateway_url = self.gateway_url.clone().unwrap_or(default_url);
 
         let private_key = std::env::var("EVM_PRIVATE_KEY")
             .map_err(|_| "EVM_PRIVATE_KEY not set — cannot sign payment".to_string())?;
@@ -861,15 +881,13 @@ impl ToolExecutor {
             "http://localhost:{}",
             std::env::var("PORT").unwrap_or_else(|_| "4023".to_string())
         );
-        let gateway_url = self
-            .gateway_url
-            .clone()
-            .unwrap_or(default_url);
+        let gateway_url = self.gateway_url.clone().unwrap_or(default_url);
 
         let url = format!("{gateway_url}/{trimmed}");
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
@@ -1040,12 +1058,7 @@ impl ToolExecutor {
                     goal_id,
                     progress_notes,
                     status,
-                } => db.update_goal(
-                    goal_id,
-                    status.as_deref(),
-                    progress_notes.as_deref(),
-                    None,
-                ),
+                } => db.update_goal(goal_id, status.as_deref(), progress_notes.as_deref(), None),
                 ModelUpdate::CompleteGoal { goal_id, outcome } => {
                     let notes = if outcome.is_empty() {
                         None
@@ -1079,6 +1092,103 @@ impl ToolExecutor {
             stderr,
             exit_code: if errors.is_empty() { 0 } else { 1 },
             duration_ms,
+        })
+    }
+
+    /// Approve a pending plan.
+    async fn approve_plan(&self, plan_id: &str) -> Result<ToolResult, String> {
+        let start = std::time::Instant::now();
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| "soul database not available".to_string())?;
+
+        match db.approve_plan(plan_id) {
+            Ok(true) => Ok(ToolResult {
+                stdout: format!("Plan {plan_id} approved — execution will begin next cycle"),
+                stderr: String::new(),
+                exit_code: 0,
+                duration_ms: start.elapsed().as_millis() as u64,
+            }),
+            Ok(false) => Ok(ToolResult {
+                stdout: String::new(),
+                stderr: format!("No pending plan with ID {plan_id}"),
+                exit_code: 1,
+                duration_ms: start.elapsed().as_millis() as u64,
+            }),
+            Err(e) => Err(format!("failed to approve plan: {e}")),
+        }
+    }
+
+    /// Reject a pending plan with optional reason.
+    async fn reject_plan(&self, plan_id: &str, reason: &str) -> Result<ToolResult, String> {
+        let start = std::time::Instant::now();
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| "soul database not available".to_string())?;
+
+        match db.reject_plan(plan_id) {
+            Ok(true) => {
+                if !reason.is_empty() {
+                    let _ = db.insert_nudge("user", &format!("Plan rejected: {reason}"), 5);
+                }
+                Ok(ToolResult {
+                    stdout: format!("Plan {plan_id} rejected"),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                })
+            }
+            Ok(false) => Ok(ToolResult {
+                stdout: String::new(),
+                stderr: format!("No pending plan with ID {plan_id}"),
+                exit_code: 1,
+                duration_ms: start.elapsed().as_millis() as u64,
+            }),
+            Err(e) => Err(format!("failed to reject plan: {e}")),
+        }
+    }
+
+    /// Request a new plan by creating a goal + high-priority nudge.
+    async fn request_plan(&self, description: &str, priority: u32) -> Result<ToolResult, String> {
+        let start = std::time::Instant::now();
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| "soul database not available".to_string())?;
+
+        let now = chrono::Utc::now().timestamp();
+        let priority = priority.clamp(1, 5);
+
+        // Create a goal
+        let goal = crate::world_model::Goal {
+            id: uuid::Uuid::new_v4().to_string(),
+            description: description.to_string(),
+            status: crate::world_model::GoalStatus::Active,
+            priority,
+            success_criteria: String::new(),
+            progress_notes: String::new(),
+            parent_goal_id: None,
+            retry_count: 0,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        };
+        db.insert_goal(&goal)
+            .map_err(|e| format!("failed to create goal: {e}"))?;
+
+        // Create a high-priority nudge to trigger plan creation next cycle
+        let _ = db.insert_nudge("user", &format!("User requested: {description}"), 5);
+
+        Ok(ToolResult {
+            stdout: format!(
+                "Created goal '{}' (priority {priority}) — plan will be created next cycle",
+                &description[..description.len().min(80)]
+            ),
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms: start.elapsed().as_millis() as u64,
         })
     }
 }
@@ -1206,6 +1316,68 @@ pub fn register_endpoint_tool() -> FunctionDeclaration {
                 }
             },
             "required": ["slug", "target_url"]
+        }),
+    }
+}
+
+/// Return the approve_plan tool declaration (Chat + Code modes).
+pub fn approve_plan_tool() -> FunctionDeclaration {
+    FunctionDeclaration {
+        name: "approve_plan".to_string(),
+        description: "Approve a pending plan so it can begin execution. Use when the user approves a plan that is awaiting approval.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plan_id": {
+                    "type": "string",
+                    "description": "The ID of the pending plan to approve"
+                }
+            },
+            "required": ["plan_id"]
+        }),
+    }
+}
+
+/// Return the reject_plan tool declaration (Chat + Code modes).
+pub fn reject_plan_tool() -> FunctionDeclaration {
+    FunctionDeclaration {
+        name: "reject_plan".to_string(),
+        description: "Reject a pending plan. Optionally provide a reason which will be used as a nudge for the next planning cycle.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plan_id": {
+                    "type": "string",
+                    "description": "The ID of the pending plan to reject"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the plan was rejected (optional, used to guide replanning)"
+                }
+            },
+            "required": ["plan_id"]
+        }),
+    }
+}
+
+/// Return the request_plan tool declaration (Chat + Code modes).
+pub fn request_plan_tool() -> FunctionDeclaration {
+    FunctionDeclaration {
+        name: "request_plan".to_string(),
+        description: "Request a new plan by creating a goal. The soul will create a plan for this goal in the next cycle.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "What the plan should accomplish"
+                },
+                "priority": {
+                    "type": "integer",
+                    "description": "Priority 1-5 (5 = highest, default 5)"
+                }
+            },
+            "required": ["description"]
         }),
     }
 }

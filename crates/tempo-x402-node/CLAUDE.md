@@ -32,4 +32,7 @@ Binary: `x402-node` on port 4023.
 - **Identity bootstrap**: `x402-identity` crate — node just calls `bootstrap()`
 - **Database schema**: `db.rs` — uses gateway's `execute_schema()` pattern
 - **Startup order**: `main.rs` — bootstrap must run before gateway config reads env vars; soul init must happen before NodeState
-- **Soul status**: `routes/soul.rs` — `GET /soul/status` queries `NodeState.soul_db` (includes world model beliefs)
+- **Soul status**: `routes/soul.rs` — `GET /soul/status` queries `NodeState.soul_db` (includes world model beliefs, plan progress, pending plan)
+- **Soul nudge**: `routes/soul.rs` — `POST /soul/nudge` inserts user messages into nudge queue, `GET /soul/nudges` lists pending
+- **Soul chat sessions**: `routes/soul.rs` — `GET /soul/chat/sessions` lists sessions, `GET /soul/chat/sessions/{id}` gets messages; chat request accepts optional `session_id`
+- **Plan approval**: `routes/soul.rs` — `POST /soul/plan/approve`, `POST /soul/plan/reject`, `GET /soul/plan/pending`

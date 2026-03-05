@@ -60,7 +60,7 @@ impl AgentMode {
                 v
             }
             Self::Chat => {
-                // Shell + read-only file tools + update_memory + update_beliefs + check_self
+                // Shell + read-only file tools + update_memory + update_beliefs + check_self + plan control
                 let mut v: Vec<_> = all
                     .into_iter()
                     .filter(|t| {
@@ -73,15 +73,21 @@ impl AgentMode {
                 v.push(tools::update_memory_tool());
                 v.push(tools::update_beliefs_tool());
                 v.push(tools::check_self_tool());
+                v.push(tools::approve_plan_tool());
+                v.push(tools::reject_plan_tool());
+                v.push(tools::request_plan_tool());
                 v
             }
             Self::Code => {
-                // All tools including write/edit/commit + update_memory + update_beliefs + register_endpoint + check_self
+                // All tools including write/edit/commit + update_memory + update_beliefs + register_endpoint + check_self + plan control
                 let mut v = all_with_git;
                 v.push(tools::update_memory_tool());
                 v.push(tools::update_beliefs_tool());
                 v.push(tools::register_endpoint_tool());
                 v.push(tools::check_self_tool());
+                v.push(tools::approve_plan_tool());
+                v.push(tools::reject_plan_tool());
+                v.push(tools::request_plan_tool());
                 v
             }
             Self::Review => {

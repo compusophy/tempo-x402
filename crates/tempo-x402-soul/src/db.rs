@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SoulError;
 use crate::memory::{Thought, ThoughtType};
+use crate::plan::{Plan, PlanStatus, PlanStep};
 use crate::world_model::{Belief, BeliefDomain, Confidence, Goal, GoalStatus};
 
 /// A dynamically registered tool.
@@ -26,6 +27,42 @@ pub struct DynamicTool {
     pub mode_tags: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// An external signal injected into the thinking loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Nudge {
+    pub id: String,
+    /// "user", "system", or "stagnation"
+    pub source: String,
+    pub content: String,
+    pub priority: u32,
+    pub created_at: i64,
+    pub processed_at: Option<i64>,
+    pub active: bool,
+}
+
+/// A chat session for multi-turn conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSession {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub active: bool,
+}
+
+/// A message within a chat session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: String,
+    pub session_id: String,
+    /// "user" or "assistant"
+    pub role: String,
+    pub content: String,
+    /// JSON array of tool execution summaries.
+    pub tool_executions: String,
+    pub created_at: i64,
 }
 
 /// A recorded code mutation attempt.
@@ -182,6 +219,69 @@ impl SoulDatabase {
             // Add goal_id to mutations (ignore if already exists)
             let _ = conn.execute_batch("ALTER TABLE mutations ADD COLUMN goal_id TEXT");
             conn.execute_batch("PRAGMA user_version = 3;")?;
+        }
+
+        if version < 4 {
+            // v4: plans table for plan-driven execution
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS plans (
+                    id TEXT PRIMARY KEY,
+                    goal_id TEXT NOT NULL,
+                    steps TEXT NOT NULL,
+                    current_step INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    context TEXT NOT NULL DEFAULT '{}',
+                    replan_count INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
+                CREATE INDEX IF NOT EXISTS idx_plans_goal ON plans(goal_id);
+                PRAGMA user_version = 4;",
+            )?;
+        }
+
+        if version < 5 {
+            // v5: nudges table for external signal injection
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS nudges (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 3,
+                    created_at INTEGER NOT NULL,
+                    processed_at INTEGER,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS idx_nudges_active ON nudges(active, priority DESC, created_at ASC);
+                PRAGMA user_version = 5;",
+            )?;
+        }
+
+        if version < 6 {
+            // v6: chat sessions + messages for multi-turn conversation
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_active ON chat_sessions(active, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    tool_executions TEXT NOT NULL DEFAULT '[]',
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at ASC);
+                PRAGMA user_version = 6;",
+            )?;
         }
 
         Ok(())
@@ -428,86 +528,6 @@ impl SoulDatabase {
                 prediction_error,
             ],
         )?;
-        Ok(())
-    }
-
-    /// Get the most salient thoughts of given types, ordered by effective salience (salience * strength).
-    pub fn salient_thoughts_by_type(
-        &self,
-        types: &[ThoughtType],
-        limit: u32,
-    ) -> Result<Vec<Thought>, SoulError> {
-        let conn = self.conn.lock().map_err(|_| {
-            SoulError::Database(rusqlite::Error::InvalidParameterName(
-                "lock poisoned".into(),
-            ))
-        })?;
-
-        if types.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let placeholders: Vec<String> = types
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect();
-        let query = format!(
-            "SELECT id, thought_type, content, context, created_at, salience, memory_tier, strength FROM thoughts \
-             WHERE thought_type IN ({}) \
-             ORDER BY COALESCE(salience,0) * COALESCE(strength,1) DESC, created_at DESC \
-             LIMIT ?{}",
-            placeholders.join(", "),
-            types.len() + 1
-        );
-
-        let mut stmt = conn.prepare(&query)?;
-
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = types
-            .iter()
-            .map(|t| Box::new(t.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>)
-            .collect();
-        params_vec.push(Box::new(limit));
-
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params_vec.iter().map(|p| p.as_ref()).collect();
-
-        let thoughts = stmt
-            .query_map(params_refs.as_slice(), |row| {
-                let type_str: String = row.get(1)?;
-                Ok(Thought {
-                    id: row.get(0)?,
-                    thought_type: ThoughtType::parse(&type_str).unwrap_or(ThoughtType::Observation),
-                    content: row.get(2)?,
-                    context: row.get(3)?,
-                    created_at: row.get(4)?,
-                    salience: row.get(5)?,
-                    memory_tier: row.get(6)?,
-                    strength: row.get(7)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(thoughts)
-    }
-
-    /// Reinforce recalled thoughts (Hebbian learning): boost strength for accessed thoughts.
-    pub fn reinforce_thoughts(&self, ids: &[String], boost: f64) -> Result<(), SoulError> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let conn = self.conn.lock().map_err(|_| {
-            SoulError::Database(rusqlite::Error::InvalidParameterName(
-                "lock poisoned".into(),
-            ))
-        })?;
-
-        for id in ids {
-            conn.execute(
-                "UPDATE thoughts SET strength = MIN(COALESCE(strength, 1.0) + ?1, 1.0) WHERE id = ?2",
-                params![boost, id],
-            )?;
-        }
         Ok(())
     }
 
@@ -1038,6 +1058,413 @@ impl SoulDatabase {
         Ok(goals)
     }
 
+    // ── Plan operations ──
+
+    /// Insert a new plan.
+    pub fn insert_plan(&self, plan: &Plan) -> Result<(), SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let steps_json = serde_json::to_string(&plan.steps)
+            .map_err(|e| SoulError::Config(format!("serialize steps: {e}")))?;
+        let context_json = serde_json::to_string(&plan.context)
+            .map_err(|e| SoulError::Config(format!("serialize context: {e}")))?;
+        conn.execute(
+            "INSERT INTO plans (id, goal_id, steps, current_step, status, context, replan_count, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                plan.id,
+                plan.goal_id,
+                steps_json,
+                plan.current_step as i64,
+                plan.status.as_str(),
+                context_json,
+                plan.replan_count,
+                plan.created_at,
+                plan.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get the currently active plan (if any). There should be at most one.
+    pub fn get_active_plan(&self) -> Result<Option<Plan>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let result = conn
+            .query_row(
+                "SELECT id, goal_id, steps, current_step, status, context, replan_count, created_at, updated_at \
+                 FROM plans WHERE status = 'active' ORDER BY created_at DESC LIMIT 1",
+                [],
+                Self::row_to_plan,
+            )
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Get the plan for a specific goal (most recent).
+    pub fn get_plan_for_goal(&self, goal_id: &str) -> Result<Option<Plan>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let result = conn
+            .query_row(
+                "SELECT id, goal_id, steps, current_step, status, context, replan_count, created_at, updated_at \
+                 FROM plans WHERE goal_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                params![goal_id],
+                Self::row_to_plan,
+            )
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Update a plan's state (current_step, status, context).
+    pub fn update_plan(&self, plan: &Plan) -> Result<bool, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let steps_json = serde_json::to_string(&plan.steps)
+            .map_err(|e| SoulError::Config(format!("serialize steps: {e}")))?;
+        let context_json = serde_json::to_string(&plan.context)
+            .map_err(|e| SoulError::Config(format!("serialize context: {e}")))?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = conn.execute(
+            "UPDATE plans SET steps = ?2, current_step = ?3, status = ?4, context = ?5, \
+             replan_count = ?6, updated_at = ?7 WHERE id = ?1",
+            params![
+                plan.id,
+                steps_json,
+                plan.current_step as i64,
+                plan.status.as_str(),
+                context_json,
+                plan.replan_count,
+                now,
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Count plans by status (e.g., "failed", "completed", "active").
+    pub fn count_plans_by_status(&self, status: &str) -> Result<u64, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let count: u64 = conn.query_row(
+            "SELECT COUNT(*) FROM plans WHERE status = ?1",
+            params![status],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    // ── Nudge operations ──
+
+    /// Insert a nudge. Returns the generated ID.
+    pub fn insert_nudge(
+        &self,
+        source: &str,
+        content: &str,
+        priority: u32,
+    ) -> Result<String, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO nudges (id, source, content, priority, created_at, active) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            params![id, source, content, priority, now],
+        )?;
+        Ok(id)
+    }
+
+    /// Get unprocessed nudges, ordered by priority DESC then created_at ASC.
+    pub fn get_unprocessed_nudges(&self, limit: u32) -> Result<Vec<Nudge>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let mut stmt = conn.prepare(
+            "SELECT id, source, content, priority, created_at, processed_at, active \
+             FROM nudges WHERE active = 1 AND processed_at IS NULL \
+             ORDER BY priority DESC, created_at ASC LIMIT ?1",
+        )?;
+        let nudges = stmt
+            .query_map(params![limit], |row| {
+                let active: i32 = row.get(6)?;
+                Ok(Nudge {
+                    id: row.get(0)?,
+                    source: row.get(1)?,
+                    content: row.get(2)?,
+                    priority: row.get(3)?,
+                    created_at: row.get(4)?,
+                    processed_at: row.get(5)?,
+                    active: active != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(nudges)
+    }
+
+    /// Mark a nudge as processed.
+    pub fn mark_nudge_processed(&self, id: &str) -> Result<(), SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "UPDATE nudges SET processed_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        Ok(())
+    }
+
+    /// Abandon all active goals. Returns number abandoned.
+    pub fn abandon_all_active_goals(&self) -> Result<u32, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = conn.execute(
+            "UPDATE goals SET status = 'abandoned', updated_at = ?1, completed_at = ?1 WHERE status = 'active'",
+            params![now],
+        )? as u32;
+        Ok(rows)
+    }
+
+    /// Count ALL goals regardless of status (for first-boot seed detection).
+    pub fn count_all_goals(&self) -> Result<u64, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let count: u64 = conn.query_row("SELECT COUNT(*) FROM goals", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    // ── Chat session operations ──
+
+    /// Create a new chat session. Returns the session ID.
+    pub fn create_session(&self, title: &str) -> Result<String, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO chat_sessions (id, title, created_at, updated_at, active) VALUES (?1, ?2, ?3, ?4, 1)",
+            params![id, title, now, now],
+        )?;
+        Ok(id)
+    }
+
+    /// Get or create the default (most recent active) session.
+    pub fn get_or_create_default_session(&self) -> Result<String, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+
+        // Try to find the most recently updated active session
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM chat_sessions WHERE active = 1 ORDER BY updated_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+
+        // Create a new default session
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO chat_sessions (id, title, created_at, updated_at, active) VALUES (?1, 'Chat', ?2, ?3, 1)",
+            params![id, now, now],
+        )?;
+        Ok(id)
+    }
+
+    /// List recent chat sessions, newest first.
+    pub fn list_sessions(&self, limit: u32) -> Result<Vec<ChatSession>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let mut stmt = conn.prepare(
+            "SELECT id, title, created_at, updated_at, active FROM chat_sessions \
+             WHERE active = 1 ORDER BY updated_at DESC LIMIT ?1",
+        )?;
+        let sessions = stmt
+            .query_map(params![limit], |row| {
+                let active: i32 = row.get(4)?;
+                Ok(ChatSession {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                    active: active != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(sessions)
+    }
+
+    /// Insert a chat message into a session.
+    pub fn insert_chat_message(&self, msg: &ChatMessage) -> Result<(), SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        conn.execute(
+            "INSERT INTO chat_messages (id, session_id, role, content, tool_executions, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                msg.id,
+                msg.session_id,
+                msg.role,
+                msg.content,
+                msg.tool_executions,
+                msg.created_at,
+            ],
+        )?;
+        // Touch session updated_at
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![now, msg.session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get messages for a session, ordered chronologically, with optional limit.
+    pub fn get_session_messages(
+        &self,
+        session_id: &str,
+        limit: u32,
+    ) -> Result<Vec<ChatMessage>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, role, content, tool_executions, created_at \
+             FROM chat_messages WHERE session_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+        )?;
+        let messages = stmt
+            .query_map(params![session_id, limit], |row| {
+                Ok(ChatMessage {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    tool_executions: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(messages)
+    }
+
+    // ── Plan approval operations ──
+
+    /// Get the pending-approval plan (if any).
+    pub fn get_pending_approval_plan(&self) -> Result<Option<Plan>, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let result = conn
+            .query_row(
+                "SELECT id, goal_id, steps, current_step, status, context, replan_count, created_at, updated_at \
+                 FROM plans WHERE status = 'pending_approval' ORDER BY created_at DESC LIMIT 1",
+                [],
+                Self::row_to_plan,
+            )
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Approve a pending plan — set status to 'active'.
+    pub fn approve_plan(&self, plan_id: &str) -> Result<bool, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = conn.execute(
+            "UPDATE plans SET status = 'active', updated_at = ?1 WHERE id = ?2 AND status = 'pending_approval'",
+            params![now, plan_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Reject a pending plan — set status to 'abandoned'.
+    pub fn reject_plan(&self, plan_id: &str) -> Result<bool, SoulError> {
+        let conn = self.conn.lock().map_err(|_| {
+            SoulError::Database(rusqlite::Error::InvalidParameterName(
+                "lock poisoned".into(),
+            ))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = conn.execute(
+            "UPDATE plans SET status = 'abandoned', updated_at = ?1 WHERE id = ?2 AND status = 'pending_approval'",
+            params![now, plan_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Helper: map a row to a Plan.
+    fn row_to_plan(row: &rusqlite::Row) -> Result<Plan, rusqlite::Error> {
+        let steps_json: String = row.get(2)?;
+        let context_json: String = row.get(5)?;
+        let status_str: String = row.get(4)?;
+        let steps: Vec<PlanStep> = serde_json::from_str(&steps_json).unwrap_or_default();
+        let context: std::collections::HashMap<String, String> =
+            serde_json::from_str(&context_json).unwrap_or_default();
+        Ok(Plan {
+            id: row.get(0)?,
+            goal_id: row.get(1)?,
+            steps,
+            current_step: row.get::<_, i64>(3)? as usize,
+            status: PlanStatus::parse(&status_str).unwrap_or(PlanStatus::Active),
+            context,
+            replan_count: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    }
+
     /// Helper: map a row to a Goal.
     fn row_to_goal(row: &rusqlite::Row) -> Result<Goal, rusqlite::Error> {
         let status_str: String = row.get(2)?;
@@ -1160,45 +1587,6 @@ mod tests {
     }
 
     #[test]
-    fn test_salient_thoughts_by_type() {
-        let db = SoulDatabase::new(":memory:").unwrap();
-
-        // Insert low-salience thought
-        let t1 = Thought {
-            id: "t1".to_string(),
-            thought_type: ThoughtType::Reasoning,
-            content: "Low salience".to_string(),
-            context: None,
-            created_at: 1000,
-            salience: Some(0.2),
-            memory_tier: Some("working".to_string()),
-            strength: Some(0.5),
-        };
-        db.insert_thought_with_salience(&t1, 0.2, "{}", "working", 0.5, None)
-            .unwrap();
-
-        // Insert high-salience thought
-        let t2 = Thought {
-            id: "t2".to_string(),
-            thought_type: ThoughtType::Reasoning,
-            content: "High salience".to_string(),
-            context: None,
-            created_at: 2000,
-            salience: Some(0.9),
-            memory_tier: Some("working".to_string()),
-            strength: Some(1.0),
-        };
-        db.insert_thought_with_salience(&t2, 0.9, "{}", "working", 1.0, None)
-            .unwrap();
-
-        let results = db
-            .salient_thoughts_by_type(&[ThoughtType::Reasoning], 2)
-            .unwrap();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].id, "t2"); // highest effective salience first
-    }
-
-    #[test]
     fn test_pattern_counts() {
         let db = SoulDatabase::new(":memory:").unwrap();
 
@@ -1277,29 +1665,6 @@ mod tests {
 
         let thoughts = db.recent_thoughts(1).unwrap();
         assert_eq!(thoughts[0].memory_tier.as_deref(), Some("working"));
-    }
-
-    #[test]
-    fn test_reinforce_thoughts() {
-        let db = SoulDatabase::new(":memory:").unwrap();
-
-        let t1 = Thought {
-            id: "t1".to_string(),
-            thought_type: ThoughtType::Reasoning,
-            content: "Reinforceable".to_string(),
-            context: None,
-            created_at: 1000,
-            salience: Some(0.5),
-            memory_tier: Some("working".to_string()),
-            strength: Some(0.7),
-        };
-        db.insert_thought_with_salience(&t1, 0.5, "{}", "working", 0.7, None)
-            .unwrap();
-
-        db.reinforce_thoughts(&["t1".to_string()], 0.1).unwrap();
-
-        let thoughts = db.recent_thoughts(1).unwrap();
-        assert!((thoughts[0].strength.unwrap() - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1531,8 +1896,13 @@ mod tests {
         assert_eq!(updated.progress_notes, "Read existing endpoint patterns");
 
         // Complete goal
-        db.update_goal("g1", Some("completed"), Some("Deployed and earning"), Some(now))
-            .unwrap();
+        db.update_goal(
+            "g1",
+            Some("completed"),
+            Some("Deployed and earning"),
+            Some(now),
+        )
+        .unwrap();
         let completed = db.get_goal("g1").unwrap().unwrap();
         assert_eq!(completed.status, GoalStatus::Completed);
 
@@ -1543,6 +1913,71 @@ mod tests {
         // Shows in recent finished
         let finished = db.recent_finished_goals(5).unwrap();
         assert_eq!(finished.len(), 1);
+    }
+
+    #[test]
+    fn test_plan_crud() {
+        use crate::plan::{Plan, PlanStatus, PlanStep};
+        use std::collections::HashMap;
+
+        let db = SoulDatabase::new(":memory:").unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        let plan = Plan {
+            id: "p1".to_string(),
+            goal_id: "g1".to_string(),
+            steps: vec![
+                PlanStep::ReadFile {
+                    path: "Cargo.toml".to_string(),
+                    store_as: Some("cargo".to_string()),
+                },
+                PlanStep::GenerateCode {
+                    file_path: "src/new.rs".to_string(),
+                    description: "Add hello".to_string(),
+                    context_keys: vec!["cargo".to_string()],
+                },
+                PlanStep::Commit {
+                    message: "feat: add hello".to_string(),
+                },
+            ],
+            current_step: 0,
+            status: PlanStatus::Active,
+            context: HashMap::new(),
+            replan_count: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        db.insert_plan(&plan).unwrap();
+
+        // Get active plan
+        let active = db.get_active_plan().unwrap().unwrap();
+        assert_eq!(active.id, "p1");
+        assert_eq!(active.steps.len(), 3);
+        assert_eq!(active.current_step, 0);
+
+        // Get plan for goal
+        let by_goal = db.get_plan_for_goal("g1").unwrap().unwrap();
+        assert_eq!(by_goal.id, "p1");
+
+        // Update plan (advance step, add context)
+        let mut updated = active;
+        updated.current_step = 1;
+        updated
+            .context
+            .insert("cargo".to_string(), "contents here".to_string());
+        db.update_plan(&updated).unwrap();
+
+        let fetched = db.get_active_plan().unwrap().unwrap();
+        assert_eq!(fetched.current_step, 1);
+        assert!(fetched.context.contains_key("cargo"));
+
+        // Complete plan
+        let mut completed = fetched;
+        completed.status = PlanStatus::Completed;
+        db.update_plan(&completed).unwrap();
+
+        // No active plan anymore
+        assert!(db.get_active_plan().unwrap().is_none());
     }
 
     #[test]

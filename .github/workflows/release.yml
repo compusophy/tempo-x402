@@ -55,7 +55,7 @@ jobs:
           echo "✓ Tag matches core version: $CORE_VERSION"
 
           # Check all crates match
-          for crate in tempo-x402-client tempo-x402-server tempo-x402-facilitator tempo-x402-gateway tempo-x402-wallet tempo-x402-identity tempo-x402-agent tempo-x402-soul tempo-x402-mind tempo-x402-node tempo-x402-app tempo-x402-security-audit; do
+          for crate in tempo-x402-client tempo-x402-server tempo-x402-facilitator tempo-x402-gateway tempo-x402-wallet tempo-x402-identity tempo-x402-agent tempo-x402-soul tempo-x402-node tempo-x402-app tempo-x402-security-audit; do
             CRATE_VERSION=$(grep -m1 '^version = ' "crates/$crate/Cargo.toml" | sed 's/version = "\(.*\)"/\1/')
             if [ "$CRATE_VERSION" != "$CORE_VERSION" ]; then
               echo "❌ crates/$crate version ($CRATE_VERSION) != core ($CORE_VERSION)"
@@ -275,10 +275,7 @@ jobs:
           publish_crate tempo-x402-agent
           publish_crate tempo-x402-soul
 
-          # Layer 5: depends on soul
-          publish_crate tempo-x402-mind
-
-          # Layer 6: depends on everything
+          # Layer 5: depends on everything
           publish_crate tempo-x402-node
 
           echo ""

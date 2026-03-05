@@ -20,6 +20,7 @@ pub mod mode;
 pub mod neuroplastic;
 pub mod observer;
 pub mod persistent_memory;
+pub mod plan;
 pub mod prompts;
 pub mod thinking;
 pub mod tool_registry;
@@ -28,13 +29,14 @@ pub mod world_model;
 
 pub use chat::{handle_chat, ChatReply};
 pub use config::SoulConfig;
-pub use db::SoulDatabase;
+pub use db::{ChatMessage, ChatSession, Nudge, SoulDatabase};
 pub use error::SoulError;
 pub use memory::{Thought, ThoughtType};
-pub use world_model::{Goal, GoalStatus};
 pub use observer::{NodeObserver, NodeSnapshot};
+pub use plan::{Plan, PlanStatus, PlanStep};
 pub use thinking::ThinkingLoop;
 pub use tools::ToolExecutor;
+pub use world_model::{Goal, GoalStatus};
 
 use std::sync::Arc;
 use tokio::task::JoinHandle;

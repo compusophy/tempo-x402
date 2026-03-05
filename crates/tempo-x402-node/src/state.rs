@@ -33,6 +33,4 @@ pub struct NodeState {
     pub soul_config: Option<SoulConfig>,
     /// Soul observer for chat handler (None if soul init failed)
     pub soul_observer: Option<Arc<dyn NodeObserver>>,
-    /// Whether the mind (subconscious loop) is active
-    pub mind_enabled: bool,
 }

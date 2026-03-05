@@ -848,7 +848,6 @@ fn DashboardPage() -> impl IntoView {
     let (endpoints, set_endpoints) = create_signal(Vec::<serde_json::Value>::new());
     let (analytics, set_analytics) = create_signal(None::<serde_json::Value>);
     let (soul_status, set_soul_status) = create_signal(None::<serde_json::Value>);
-    let (mind_status, set_mind_status) = create_signal(None::<serde_json::Value>);
     let (loading, set_loading) = create_signal(true);
     let (error, set_error) = create_signal(None::<String>);
     let (tick, set_tick) = create_signal(0u32);
@@ -889,12 +888,6 @@ fn DashboardPage() -> impl IntoView {
             // Fetch soul status
             if let Ok(data) = api::fetch_soul_status().await {
                 set_soul_status.set(Some(data));
-            }
-
-            // Fetch mind status (graceful — 404 means not enabled)
-            match api::fetch_mind_status().await {
-                Ok(data) => set_mind_status.set(Some(data)),
-                Err(_) => set_mind_status.set(None),
             }
 
             set_loading.set(false);
@@ -1002,20 +995,8 @@ fn DashboardPage() -> impl IntoView {
                             </div>
                         </div>
 
-                        // Mind panel (if available), otherwise Soul panel
-                        {move || {
-                            let ms = mind_status.get();
-                            if ms.is_some() {
-                                view! {
-                                    <MindPanel status=mind_status />
-                                    <SoulPanel status=soul_status />
-                                }.into_view()
-                            } else {
-                                view! {
-                                    <SoulPanel status=soul_status />
-                                }.into_view()
-                            }
-                        }}
+                        // Soul panel
+                        <SoulPanel status=soul_status />
 
                         // Endpoints table
                         <div class="endpoints-section">
@@ -1126,63 +1107,13 @@ fn format_timestamp(unix_ts: i64) -> String {
     format!("{:02}:{:02}", h, m)
 }
 
-/// Mind status panel — subconscious background loop stats
-#[component]
-fn MindPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
-    view! {
-        <div class="mind-section">
-            {move || {
-                let data = match status.get() {
-                    Some(d) => d,
-                    None => return view! { <span></span> }.into_view(),
-                };
-
-                let enabled = data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                if !enabled {
-                    return view! { <span></span> }.into_view();
-                }
-
-                let cycles = data.get("total_cycles").and_then(|v| v.as_u64()).unwrap_or(0);
-                let last_cycle = data.get("last_cycle_at")
-                    .and_then(|v| v.as_i64())
-                    .map(format_relative_time)
-                    .unwrap_or_else(|| "never".to_string());
-                let last_consolidation = data.get("last_consolidation_at")
-                    .and_then(|v| v.as_i64())
-                    .map(format_relative_time)
-                    .unwrap_or_else(|| "never".to_string());
-
-                view! {
-                    <div class="mind-card">
-                        <div class="mind-header">
-                            <h2>"Subconscious"</h2>
-                            <span class="soul-status-badge soul-status--green">"Active"</span>
-                        </div>
-                        <div class="mind-stats">
-                            <div class="hemisphere-stat">
-                                <span class="hemisphere-stat-label">"Cycles"</span>
-                                <span class="hemisphere-stat-value">{cycles.to_string()}</span>
-                            </div>
-                            <div class="hemisphere-stat">
-                                <span class="hemisphere-stat-label">"Last cycle"</span>
-                                <span class="hemisphere-stat-value">{last_cycle}</span>
-                            </div>
-                            <div class="hemisphere-stat">
-                                <span class="hemisphere-stat-label">"Last consolidation"</span>
-                                <span class="hemisphere-stat-value">{last_consolidation}</span>
-                            </div>
-                        </div>
-                    </div>
-                }.into_view()
-            }}
-        </div>
-    }
-}
-
 /// Soul observability panel — enhanced with mode, flags, expandable thoughts
 #[component]
 fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
     let (expanded_idx, set_expanded_idx) = create_signal(None::<usize>);
+    let (nudge_input, set_nudge_input) = create_signal(String::new());
+    let (nudge_sending, set_nudge_sending) = create_signal(false);
+    let (nudge_result, set_nudge_result) = create_signal(None::<Result<(), String>>);
 
     view! {
         <div class="soul-section">
@@ -1220,22 +1151,22 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
 
                 // Cycle health metrics
                 let cycle_health = data.get("cycle_health");
-                let boring_streak = cycle_health
-                    .and_then(|h| h.get("boring_streak"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-                let active_streak = cycle_health
-                    .and_then(|h| h.get("active_streak"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
                 let total_code_entries = cycle_health
                     .and_then(|h| h.get("total_code_entries"))
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                let last_decisions = cycle_health
-                    .and_then(|h| h.get("last_cycle_decisions"))
+                let cycles_since_commit = cycle_health
+                    .and_then(|h| h.get("cycles_since_last_commit"))
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                    .unwrap_or(0);
+                let failed_plans = cycle_health
+                    .and_then(|h| h.get("failed_plans_count"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let goals_active = cycle_health
+                    .and_then(|h| h.get("goals_active"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
 
                 let (badge_class, badge_label) = if !active {
                     ("soul-status--gray", "Inactive")
@@ -1292,27 +1223,29 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
                             </div>
                         </div>
 
-                        // Cycle health bar
+                        // Plan-driven health bar
                         {if active && !dormant {
-                            let streak_class = if boring_streak >= 5 {
+                            let health_class = if cycles_since_commit > 30 {
                                 "soul-streak soul-streak--danger"
-                            } else if boring_streak >= 3 {
+                            } else if cycles_since_commit > 15 || failed_plans > 0 {
                                 "soul-streak soul-streak--warn"
-                            } else if active_streak >= 2 {
+                            } else if goals_active > 0 {
                                 "soul-streak soul-streak--active"
                             } else {
                                 "soul-streak"
                             };
-                            let streak_label = if boring_streak >= 3 {
-                                format!("idle x{} (no decisions)", boring_streak)
-                            } else if active_streak >= 2 {
-                                format!("active x{} ({} decisions last cycle)", active_streak, last_decisions)
+                            let health_label = if cycles_since_commit > 30 {
+                                format!("stagnant ({} cycles, no commit)", cycles_since_commit)
+                            } else if failed_plans > 0 {
+                                format!("{} goals, {} failed plans, {} cycles since commit", goals_active, failed_plans, cycles_since_commit)
+                            } else if goals_active > 0 {
+                                format!("{} goals active, {} cycles since commit", goals_active, cycles_since_commit)
                             } else {
                                 format!("mode: {}", mode)
                             };
                             Some(view! {
-                                <div class={streak_class}>
-                                    {streak_label}
+                                <div class={health_class}>
+                                    {health_label}
                                 </div>
                             })
                         } else {
@@ -1329,6 +1262,63 @@ fn SoulPanel(status: ReadSignal<Option<serde_json::Value>>) -> impl IntoView {
                                     <span class={if coding_enabled { "soul-flag soul-flag--on" } else { "soul-flag" }}>
                                         {if coding_enabled { "coding: on" } else { "coding: off" }}
                                     </span>
+                                </div>
+                            })
+                        } else {
+                            None
+                        }}
+
+                        // Nudge form
+                        {if active && !dormant {
+                            let send_nudge = move |_: web_sys::MouseEvent| {
+                                let msg = nudge_input.get().trim().to_string();
+                                if msg.is_empty() || nudge_sending.get() {
+                                    return;
+                                }
+                                set_nudge_sending.set(true);
+                                set_nudge_result.set(None);
+                                spawn_local(async move {
+                                    match api::send_nudge(&msg, 5).await {
+                                        Ok(()) => {
+                                            set_nudge_input.set(String::new());
+                                            set_nudge_result.set(Some(Ok(())));
+                                        }
+                                        Err(e) => {
+                                            set_nudge_result.set(Some(Err(e)));
+                                        }
+                                    }
+                                    set_nudge_sending.set(false);
+                                });
+                            };
+                            Some(view! {
+                                <div class="soul-nudge-form">
+                                    <h3>"Nudge"</h3>
+                                    <div class="soul-nudge-row">
+                                        <input
+                                            type="text"
+                                            class="soul-nudge-input"
+                                            placeholder="Send a message to the soul..."
+                                            prop:value=move || nudge_input.get()
+                                            on:input=move |ev| set_nudge_input.set(event_target_value(&ev))
+                                            disabled=move || nudge_sending.get()
+                                        />
+                                        <button
+                                            class="btn btn-primary btn-sm"
+                                            on:click=send_nudge
+                                            disabled=move || nudge_sending.get() || nudge_input.get().trim().is_empty()
+                                        >
+                                            {move || if nudge_sending.get() { "Sending..." } else { "Send" }}
+                                        </button>
+                                    </div>
+                                    {move || match nudge_result.get() {
+                                        Some(Ok(())) => Some(view! {
+                                            <p class="soul-nudge-ok">"Nudge sent!"</p>
+                                        }.into_view()),
+                                        Some(Err(e)) => Some(view! {
+                                            <p class="soul-nudge-err">{e}</p>
+                                        }.into_view()),
+                                        None => None,
+                                    }}
                                 </div>
                             })
                         } else {
@@ -1434,23 +1424,15 @@ struct ChatDisplayMessage {
     hemisphere: Option<String>,
 }
 
-/// Interactive chat page with mind/soul toggle
+/// Interactive soul chat page
 #[component]
 fn ChatPage() -> impl IntoView {
     let (messages, set_messages) = create_signal(Vec::<ChatDisplayMessage>::new());
     let (input, set_input) = create_signal(String::new());
     let (loading, set_loading) = create_signal(false);
     let (error, set_error) = create_signal(None::<String>);
-    let (use_mind, set_use_mind) = create_signal(false);
-    let (mind_available, set_mind_available) = create_signal(false);
-
-    // Check if mind is available on mount
-    spawn_local(async move {
-        if api::fetch_mind_status().await.is_ok() {
-            set_mind_available.set(true);
-        }
-    });
-
+    let (session_id, set_session_id) = create_signal(None::<String>);
+    let (pending_plan, set_pending_plan) = create_signal(None::<serde_json::Value>);
     // Auto-scroll ref
     let messages_ref = create_node_ref::<html::Div>();
 
@@ -1459,6 +1441,22 @@ fn ChatPage() -> impl IntoView {
             el.set_scroll_top(el.scroll_height());
         }
     };
+
+    // Fetch pending plan on mount + every 10s
+    {
+        spawn_local(async move {
+            loop {
+                if let Ok(plan) = api::get_pending_plan().await {
+                    if plan.is_null() {
+                        set_pending_plan.set(None);
+                    } else {
+                        set_pending_plan.set(Some(plan));
+                    }
+                }
+                gloo_timers::future::TimeoutFuture::new(10_000).await;
+            }
+        });
+    }
 
     let now_ts = move || (js_sys::Date::now() / 1000.0) as i64;
 
@@ -1482,17 +1480,17 @@ fn ChatPage() -> impl IntoView {
         set_loading.set(true);
         set_error.set(None);
 
-        let is_mind = use_mind.get();
-
+        let sid = session_id.get();
         spawn_local(async move {
-            let result = if is_mind {
-                api::send_mind_chat(&msg).await
-            } else {
-                api::send_soul_chat(&msg).await
-            };
+            let result = api::send_soul_chat(&msg, sid.as_deref()).await;
 
             match result {
                 Ok(resp) => {
+                    // Track session_id from response
+                    if let Some(sid) = resp.get("session_id").and_then(|v| v.as_str()) {
+                        set_session_id.set(Some(sid.to_string()));
+                    }
+
                     let reply = resp
                         .get("reply")
                         .and_then(|v| v.as_str())
@@ -1534,6 +1532,7 @@ fn ChatPage() -> impl IntoView {
     let clear_chat = move |_| {
         set_messages.set(Vec::new());
         set_error.set(None);
+        set_session_id.set(None); // Start a new session
     };
 
     let on_click = move |_: web_sys::MouseEvent| {
@@ -1547,30 +1546,66 @@ fn ChatPage() -> impl IntoView {
         }
     };
 
+    let approve_handler = move |_: web_sys::MouseEvent| {
+        if let Some(plan) = pending_plan.get() {
+            if let Some(plan_id) = plan.get("id").and_then(|v| v.as_str()) {
+                let plan_id = plan_id.to_string();
+                spawn_local(async move {
+                    let _ = api::approve_plan(&plan_id).await;
+                    set_pending_plan.set(None);
+                });
+            }
+        }
+    };
+
+    let reject_handler = move |_: web_sys::MouseEvent| {
+        if let Some(plan) = pending_plan.get() {
+            if let Some(plan_id) = plan.get("id").and_then(|v| v.as_str()) {
+                let plan_id = plan_id.to_string();
+                spawn_local(async move {
+                    let _ = api::reject_plan(&plan_id, None).await;
+                    set_pending_plan.set(None);
+                });
+            }
+        }
+    };
+
     view! {
         <div class="chat-page">
             <div class="chat-header">
-                <h1>{move || if use_mind.get() { "Mind Chat" } else { "Soul Chat" }}</h1>
+                <h1>"Soul Chat"</h1>
                 <div class="chat-header-controls">
-                    <div class="chat-tabs">
-                        <button
-                            class=move || if !use_mind.get() { "chat-tab active" } else { "chat-tab" }
-                            on:click=move |_| set_use_mind.set(false)
-                        >
-                            "Soul"
-                        </button>
-                        <Show when=move || mind_available.get() fallback=|| ()>
-                            <button
-                                class=move || if use_mind.get() { "chat-tab active" } else { "chat-tab" }
-                                on:click=move |_| set_use_mind.set(true)
-                            >
-                                "Mind"
-                            </button>
-                        </Show>
-                    </div>
-                    <button class="chat-clear-btn" on:click=clear_chat>"Clear"</button>
+                    <button class="chat-clear-btn" on:click=clear_chat>"New Chat"</button>
                 </div>
             </div>
+
+            <Show when=move || pending_plan.get().is_some() fallback=|| ()>
+                <div class="plan-approval-bar">
+                    <div class="plan-approval-info">
+                        <span class="plan-approval-badge">"PLAN AWAITING APPROVAL"</span>
+                        <span class="plan-approval-desc">
+                            {move || pending_plan.get()
+                                .and_then(|p| p.get("goal_description")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()))
+                                .unwrap_or_else(|| "Unknown goal".to_string())
+                            }
+                        </span>
+                        <span class="plan-approval-steps">
+                            {move || pending_plan.get()
+                                .and_then(|p| p.get("total_steps")
+                                    .and_then(|v| v.as_u64()))
+                                .map(|n| format!("({n} steps)"))
+                                .unwrap_or_default()
+                            }
+                        </span>
+                    </div>
+                    <div class="plan-approval-actions">
+                        <button class="btn btn-approve" on:click=approve_handler>"Approve"</button>
+                        <button class="btn btn-reject" on:click=reject_handler>"Reject"</button>
+                    </div>
+                </div>
+            </Show>
 
             <div class="chat-messages" node_ref=messages_ref>
                 <For
@@ -1673,13 +1708,7 @@ fn ChatPage() -> impl IntoView {
                 <input
                     type="text"
                     class="chat-input"
-                    placeholder=move || {
-                        if use_mind.get() {
-                            "Ask the mind something..."
-                        } else {
-                            "Ask the soul something..."
-                        }
-                    }
+                    placeholder="Ask the soul something..."
                     prop:value=move || input.get()
                     on:input=move |ev| set_input.set(event_target_value(&ev))
                     on:keydown=on_keydown

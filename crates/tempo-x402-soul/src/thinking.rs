@@ -1,7 +1,8 @@
-//! The thinking loop: periodic observe → think → record cycle with tool execution.
+//! Plan-driven thinking loop: deterministic step execution replaces prompt-and-pray.
 //!
-//! Uses adaptive pacing: the interval between think cycles varies based on
-//! what's happening (novelty, tool use, decisions made) rather than being fixed.
+//! Each cycle: observe → get/create plan → execute one step → advance → sleep.
+//! Most steps are mechanical (no LLM). LLM is only called for planning,
+//! code generation, and reflection.
 
 use std::sync::Arc;
 
@@ -16,167 +17,55 @@ use crate::llm::{
     LlmResult,
 };
 use crate::memory::{Thought, ThoughtType};
-use crate::mode::AgentMode;
 use crate::neuroplastic;
 use crate::observer::{NodeObserver, NodeSnapshot};
-use crate::persistent_memory;
+use crate::plan::{Plan, PlanExecutor, PlanStatus, PlanStep, StepResult};
 use crate::prompts;
 use crate::tool_registry::ToolRegistry;
 use crate::tools::{self, ToolExecutor};
-use crate::world_model::{Belief, BeliefDomain, Confidence, ModelUpdate};
+use crate::world_model::{Belief, BeliefDomain, Confidence, Goal, ModelUpdate};
 
-/// Adaptive pacing: adjusts think interval based on novelty and activity.
+/// Simplified adaptive pacing for plan-driven execution.
 struct AdaptivePacer {
-    /// The configured base interval (seconds).
-    base_secs: u64,
-    /// Current interval (seconds). Adjusted after each cycle.
-    current_secs: u64,
-    /// Previous snapshot for change detection.
     prev_snapshot: Option<NodeSnapshot>,
-    /// Number of consecutive "boring" cycles (no novelty, no tools, no decisions).
-    boring_streak: u32,
-    /// Number of consecutive "active" cycles (tools used or decisions made).
-    active_streak: u32,
 }
-
-/// Floor: never think faster than once per 60s.
-const MIN_INTERVAL_SECS: u64 = 60;
-/// Ceiling: never go longer than 1 hour between thoughts.
-const MAX_INTERVAL_SECS: u64 = 3600;
-/// After a cycle with tool use, think again sooner.
-const ACTIVE_COOLDOWN_SECS: u64 = 120;
-/// After a cycle with a decision, think again at moderate pace.
-const DECISION_COOLDOWN_SECS: u64 = 300;
 
 impl AdaptivePacer {
-    fn new(base_secs: u64) -> Self {
+    fn new() -> Self {
         Self {
-            base_secs,
-            current_secs: base_secs,
             prev_snapshot: None,
-            boring_streak: 0,
-            active_streak: 0,
         }
     }
 
-    /// Compute the next sleep interval based on what happened this cycle.
-    fn next_interval(&mut self, snapshot: &NodeSnapshot, cycle_result: &CycleResult) -> u64 {
-        let novelty = self.compute_novelty(snapshot);
-        let made_decisions = cycle_result.decisions > 0;
-        let requested_soon = cycle_result.think_soon;
-
-        // Read-only tool calls with no decisions and no code entry are NOT productive.
-        // This lets boring_streak build up when the soul is stuck reading files repeatedly.
-        let used_tools_productively =
-            cycle_result.entered_code || (cycle_result.tool_calls > 0 && made_decisions);
-
-        // Update streaks
-        if used_tools_productively || novelty > 0.3 {
-            self.active_streak += 1;
-            self.boring_streak = 0;
-        } else {
-            self.boring_streak += 1;
-            self.active_streak = 0;
-        }
-
-        // Calculate next interval
-        let next = if requested_soon {
-            // Soul explicitly asked to think again soon
-            MIN_INTERVAL_SECS
-        } else if used_tools_productively && self.active_streak > 1 {
-            // Deep work: multiple active cycles in a row → stay engaged
-            ACTIVE_COOLDOWN_SECS
-        } else if used_tools_productively {
-            // Single active cycle → moderate cooldown
-            DECISION_COOLDOWN_SECS
-        } else if made_decisions {
-            // Made a decision but no tools → check back at moderate pace
-            DECISION_COOLDOWN_SECS
-        } else if novelty > 0.5 {
-            // Significant change in node state → investigate sooner
-            self.base_secs / 3
-        } else if novelty > 0.1 {
-            // Minor change → slightly sooner
-            self.base_secs / 2
-        } else if self.boring_streak >= 5 {
-            // Long boring streak → settle to a moderate rhythm, don't exponentially backoff
-            // The soul should still think regularly — it has tools to explore
-            self.base_secs + 300 // base + 5min, capped by MAX below
-        } else if self.boring_streak >= 2 {
-            // Mildly boring → normal pace, the prompt will nudge exploration
-            self.base_secs
-        } else {
-            // Normal → use base interval
-            self.base_secs
-        };
-
-        // Clamp to bounds
-        self.current_secs = next.clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS);
-
-        // Store snapshot for next comparison
+    /// Determine next sleep interval based on what happened.
+    fn next_interval(&mut self, snapshot: &NodeSnapshot, step_type: StepType) -> u64 {
         self.prev_snapshot = Some(snapshot.clone());
-
-        self.current_secs
-    }
-
-    /// Compute a novelty score [0.0, 1.0] by comparing current snapshot to previous.
-    fn compute_novelty(&self, current: &NodeSnapshot) -> f64 {
-        let prev = match &self.prev_snapshot {
-            Some(p) => p,
-            None => return 1.0, // First observation is always novel
-        };
-
-        let mut score = 0.0;
-        let mut factors = 0;
-
-        // New payments
-        if current.total_payments != prev.total_payments {
-            score += 0.4;
+        match step_type {
+            StepType::Mechanical => 30,     // fast, keep making progress
+            StepType::Llm => 120,           // LLM step, moderate pause
+            StepType::PlanCompleted => 300, // time to create next plan
+            StepType::NoGoals => 600,       // idle
+            StepType::Observe => 60,        // quick observation only
         }
-        factors += 1;
-
-        // Revenue changed
-        if current.total_revenue != prev.total_revenue {
-            score += 0.3;
-        }
-        factors += 1;
-
-        // Endpoint count changed
-        if current.endpoint_count != prev.endpoint_count {
-            score += 0.3;
-        }
-        factors += 1;
-
-        // Children count changed
-        if current.children_count != prev.children_count {
-            score += 0.4;
-        }
-        factors += 1;
-
-        // Wallet appeared or changed
-        if current.wallet_address != prev.wallet_address {
-            score += 0.2;
-        }
-        factors += 1;
-
-        // Instance ID appeared
-        if current.instance_id != prev.instance_id {
-            score += 0.2;
-        }
-        factors += 1;
-
-        (score / factors as f64).min(1.0)
     }
 }
 
-/// Result of a single think cycle, used by the adaptive pacer.
+/// What kind of step was executed (for pacing).
+enum StepType {
+    Mechanical,
+    Llm,
+    PlanCompleted,
+    NoGoals,
+    Observe,
+}
+
+/// Result of a single think cycle, used by the main loop.
 struct CycleResult {
-    tool_calls: u32,
-    decisions: u32,
-    /// Whether the LLM output contained [THINK_SOON] to request faster re-thinking.
-    think_soon: bool,
-    /// Whether the soul transitioned into Code mode this cycle.
+    step_type: StepType,
+    /// Whether the soul executed code this cycle.
     entered_code: bool,
+    /// Summary for logging.
+    summary: String,
 }
 
 /// The thinking loop that drives the soul.
@@ -250,9 +139,9 @@ impl ThinkingLoop {
         }
     }
 
-    /// Run the thinking loop with adaptive pacing.
+    /// Run the thinking loop.
     pub async fn run(&self) {
-        let mut pacer = AdaptivePacer::new(self.config.think_interval_secs);
+        let mut pacer = AdaptivePacer::new();
 
         // Initialize git workspace if coding is enabled
         if self.config.coding_enabled {
@@ -271,7 +160,6 @@ impl ThinkingLoop {
                     Ok(r) => tracing::info!(output = %r.output, "Git workspace initialized"),
                     Err(e) => tracing::warn!(error = %e, "Failed to initialize git workspace"),
                 }
-                // Ensure correct branch
                 let branch_label = if self.config.direct_push {
                     "main (direct push)"
                 } else {
@@ -285,10 +173,10 @@ impl ThinkingLoop {
         }
 
         tracing::info!(
-            base_interval_secs = self.config.think_interval_secs,
             dormant = self.llm.is_none(),
             tools_enabled = self.config.tools_enabled,
-            "Soul thinking loop started (adaptive pacing)"
+            coding_enabled = self.config.coding_enabled,
+            "Soul plan-driven loop started"
         );
 
         loop {
@@ -296,40 +184,29 @@ impl ThinkingLoop {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!(error = %e, "Soul observe failed");
-                    tokio::time::sleep(std::time::Duration::from_secs(pacer.current_secs)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     continue;
                 }
             };
 
-            let cycle_result = match self.think_cycle_with_snapshot(&snapshot, &pacer).await {
+            let cycle_result = match self.plan_cycle(&snapshot, &pacer).await {
                 Ok(result) => result,
                 Err(e) => {
-                    tracing::warn!(error = %e, "Soul think cycle failed");
+                    tracing::warn!(error = %e, "Soul plan cycle failed");
                     CycleResult {
-                        tool_calls: 0,
-                        decisions: 0,
-                        think_soon: false,
+                        step_type: StepType::Observe,
                         entered_code: false,
+                        summary: format!("error: {e}"),
                     }
                 }
             };
 
-            let next_secs = pacer.next_interval(&snapshot, &cycle_result);
+            // Run housekeeping (decay, promotion, belief decay, consolidation)
+            self.housekeeping();
 
-            // Persist cycle health metrics for /soul/status observability
-            let _ = self
-                .db
-                .set_state("boring_streak", &pacer.boring_streak.to_string());
-            let _ = self
-                .db
-                .set_state("active_streak", &pacer.active_streak.to_string());
-            let _ = self.db.set_state(
-                "last_cycle_tool_calls",
-                &cycle_result.tool_calls.to_string(),
-            );
-            let _ = self
-                .db
-                .set_state("last_cycle_decisions", &cycle_result.decisions.to_string());
+            let next_secs = pacer.next_interval(&snapshot, cycle_result.step_type);
+
+            // Persist cycle health metrics
             let _ = self.db.set_state(
                 "last_cycle_entered_code",
                 if cycle_result.entered_code {
@@ -353,50 +230,283 @@ impl ThinkingLoop {
 
             tracing::info!(
                 next_interval_secs = next_secs,
-                boring_streak = pacer.boring_streak,
-                active_streak = pacer.active_streak,
-                tool_calls = cycle_result.tool_calls,
-                decisions = cycle_result.decisions,
                 entered_code = cycle_result.entered_code,
-                "Soul cycle complete, next think in {}s",
-                next_secs
+                summary = %cycle_result.summary,
+                "Soul cycle complete"
             );
 
             tokio::time::sleep(std::time::Duration::from_secs(next_secs)).await;
         }
     }
 
-    /// Execute one think cycle with a pre-captured snapshot.
-    /// Returns cycle metadata for adaptive pacing.
-    async fn think_cycle_with_snapshot(
+    /// Execute one plan-driven cycle.
+    async fn plan_cycle(
         &self,
         snapshot: &NodeSnapshot,
         pacer: &AdaptivePacer,
     ) -> Result<CycleResult, SoulError> {
+        // ── Step 1: Observe — record snapshot, sync auto-beliefs ──
+        self.observe(snapshot, pacer)?;
+
+        // If dormant (no API key), stop here
+        let llm = match &self.llm {
+            Some(g) => g,
+            None => {
+                tracing::debug!("Soul dormant — observation recorded");
+                self.increment_cycle_count()?;
+                return Ok(CycleResult {
+                    step_type: StepType::Observe,
+                    entered_code: false,
+                    summary: "dormant".to_string(),
+                });
+            }
+        };
+
+        // ── Read nudges (external signals) ──
+        let nudges = self.db.get_unprocessed_nudges(5).unwrap_or_default();
+        if !nudges.is_empty() {
+            tracing::info!(count = nudges.len(), "Processing nudges");
+        }
+
+        // ── Check for pending-approval plan first ──
+        if let Ok(Some(pending)) = self.db.get_pending_approval_plan() {
+            // Check if approval has timed out
+            let age_mins = (chrono::Utc::now().timestamp() - pending.created_at).max(0) as u64 / 60;
+            if age_mins >= self.config.plan_approval_timeout_mins {
+                tracing::info!(
+                    plan_id = %pending.id,
+                    age_mins,
+                    "Plan approval timed out — auto-approving"
+                );
+                let _ = self.db.approve_plan(&pending.id);
+                // Fall through to pick it up as active
+            } else {
+                tracing::debug!(
+                    plan_id = %pending.id,
+                    age_mins,
+                    "Plan awaiting approval — skipping execution"
+                );
+                self.increment_cycle_count()?;
+                return Ok(CycleResult {
+                    step_type: StepType::Observe,
+                    entered_code: false,
+                    summary: format!("plan {} awaiting approval ({age_mins}m)", pending.id),
+                });
+            }
+        }
+
+        // ── Step 2: Get or create plan ──
+        let mut plan = match self.db.get_active_plan()? {
+            Some(plan) => plan,
+            None => {
+                // No active plan — try to create one
+                match self.create_plan(llm, snapshot, &nudges).await? {
+                    Some(plan) => {
+                        // Mark nudges as processed after they've influenced plan creation
+                        for nudge in &nudges {
+                            let _ = self.db.mark_nudge_processed(&nudge.id);
+                        }
+                        // If plan requires approval, don't execute it yet
+                        if plan.status == PlanStatus::PendingApproval {
+                            tracing::info!(
+                                plan_id = %plan.id,
+                                "Plan created — awaiting approval"
+                            );
+                            self.increment_cycle_count()?;
+                            return Ok(CycleResult {
+                                step_type: StepType::Observe,
+                                entered_code: false,
+                                summary: format!("plan {} created, awaiting approval", plan.id),
+                            });
+                        }
+                        plan
+                    }
+                    None => {
+                        // No goals either — create goals
+                        self.create_goals(llm, snapshot, &nudges).await?;
+                        // Mark nudges as processed after they've influenced goal creation
+                        for nudge in &nudges {
+                            let _ = self.db.mark_nudge_processed(&nudge.id);
+                        }
+                        self.increment_cycle_count()?;
+                        return Ok(CycleResult {
+                            step_type: StepType::NoGoals,
+                            entered_code: false,
+                            summary: "created goals, will plan next cycle".to_string(),
+                        });
+                    }
+                }
+            }
+        };
+
+        // ── Stagnation checks ──
+
+        // Circuit breaker 1: global stagnation — 30+ cycles without a commit
+        let cycles_since_commit = self.get_cycles_since_last_commit();
+        if cycles_since_commit > 30 {
+            tracing::warn!(
+                cycles_since_commit,
+                "Global stagnation — abandoning all goals"
+            );
+            let abandoned = self.db.abandon_all_active_goals().unwrap_or(0);
+            plan.status = PlanStatus::Failed;
+            let _ = self.db.update_plan(&plan);
+            let _ = self.db.set_state("active_plan_id", "");
+            let _ = self.db.insert_nudge(
+                "stagnation",
+                &format!("{cycles_since_commit} cycles without progress. All {abandoned} goals reset. Try a completely different approach."),
+                4,
+            );
+            self.reset_commit_counter();
+            self.increment_cycle_count()?;
+            return Ok(CycleResult {
+                step_type: StepType::Observe,
+                entered_code: false,
+                summary: format!("stagnation reset after {cycles_since_commit} idle cycles"),
+            });
+        }
+
+        // Circuit breaker 2: goal has failed too many times
+        if let Ok(Some(goal)) = self.db.get_goal(&plan.goal_id) {
+            if goal.retry_count >= 2 {
+                tracing::warn!(
+                    goal_id = %plan.goal_id,
+                    retry_count = goal.retry_count,
+                    "Goal failed too many times — abandoning"
+                );
+                let _ = self.db.update_goal(
+                    &plan.goal_id,
+                    Some("abandoned"),
+                    None,
+                    Some(chrono::Utc::now().timestamp()),
+                );
+                plan.status = PlanStatus::Failed;
+                let _ = self.db.update_plan(&plan);
+                let _ = self.db.set_state("active_plan_id", "");
+                let desc_preview: String = goal.description.chars().take(80).collect();
+                let _ = self.db.insert_nudge(
+                    "stagnation",
+                    &format!(
+                        "Goal '{}' failed {} times. Try a different approach.",
+                        desc_preview, goal.retry_count
+                    ),
+                    3,
+                );
+                self.increment_cycle_count()?;
+                return Ok(CycleResult {
+                    step_type: StepType::Observe,
+                    entered_code: false,
+                    summary: format!("abandoned goal after {} retries", goal.retry_count),
+                });
+            }
+        }
+
+        // ── Step 3: Execute next step ──
+        if plan.current_step >= plan.steps.len() {
+            // Plan is done — reflect and complete
+            return self.complete_plan(llm, &mut plan).await;
+        }
+
+        let step = plan.steps[plan.current_step].clone();
+        let step_summary = step.summary();
+        let is_llm = step.needs_llm();
+        let is_code = matches!(
+            step,
+            PlanStep::GenerateCode { .. } | PlanStep::EditCode { .. } | PlanStep::Commit { .. }
+        );
+
+        tracing::info!(
+            plan_id = %plan.id,
+            step = plan.current_step,
+            total_steps = plan.steps.len(),
+            step_type = %step_summary,
+            "Executing plan step"
+        );
+
+        let executor = PlanExecutor::new(&self.tool_executor, llm, &self.config, &self.db);
+        let result = executor.execute_step(&step, &plan.context).await;
+
+        // ── Step 4: Handle result ──
+        match result {
+            StepResult::Success(output) => {
+                // Store output in plan context if step has store_as
+                if let Some(key) = step.store_key() {
+                    // Truncate large outputs
+                    let truncated = if output.len() > 8000 {
+                        format!("{}...(truncated)", &output[..8000])
+                    } else {
+                        output.clone()
+                    };
+                    plan.context.insert(key.to_string(), truncated);
+                }
+                plan.current_step += 1;
+                self.db.update_plan(&plan)?;
+
+                // Reset stagnation counter on successful commit
+                if matches!(step, PlanStep::Commit { .. }) {
+                    self.reset_commit_counter();
+                }
+
+                tracing::info!(
+                    step = %step_summary,
+                    output_len = output.len(),
+                    "Step succeeded"
+                );
+
+                self.increment_cycle_count()?;
+                Ok(CycleResult {
+                    step_type: if is_llm {
+                        StepType::Llm
+                    } else {
+                        StepType::Mechanical
+                    },
+                    entered_code: is_code,
+                    summary: format!(
+                        "step {}/{}: {}",
+                        plan.current_step,
+                        plan.steps.len(),
+                        step_summary
+                    ),
+                })
+            }
+            StepResult::Failed(error) => {
+                tracing::warn!(step = %step_summary, error = %error, "Step failed");
+                self.handle_step_failure(llm, &mut plan, &step_summary, &error)
+                    .await
+            }
+            StepResult::NeedsReplan(reason) => {
+                tracing::info!(step = %step_summary, reason = %reason, "Step needs replan");
+                self.handle_step_failure(llm, &mut plan, &step_summary, &reason)
+                    .await
+            }
+        }
+    }
+
+    /// Record observation and sync auto-beliefs.
+    fn observe(&self, snapshot: &NodeSnapshot, pacer: &AdaptivePacer) -> Result<(), SoulError> {
         let snapshot_json = serde_json::to_string(snapshot)?;
         let neuroplastic = self.config.neuroplastic_enabled;
 
-        // ── Step 1-3: Prediction error (compare last prediction vs actual) ──
+        // Prediction error
         let prediction_error = if neuroplastic {
-            let pe = match self.db.get_last_prediction() {
+            match self.db.get_last_prediction() {
                 Ok(Some(pred_json)) => {
                     match serde_json::from_str::<neuroplastic::Prediction>(&pred_json) {
-                        Ok(pred) => {
-                            let pe = neuroplastic::compute_prediction_error(&pred, snapshot);
-                            tracing::debug!(prediction_error = pe, "Prediction error computed");
-                            pe
-                        }
+                        Ok(pred) => neuroplastic::compute_prediction_error(&pred, snapshot),
                         Err(_) => 0.0,
                     }
                 }
                 _ => 0.0,
-            };
+            }
+        } else {
+            0.0
+        };
 
-            // Generate and store new prediction
+        // Generate new prediction
+        if neuroplastic {
             let new_pred =
                 neuroplastic::generate_prediction(snapshot, pacer.prev_snapshot.as_ref());
             if let Ok(pred_json) = serde_json::to_string(&new_pred) {
-                // Store prediction as a thought
                 let pred_thought = Thought {
                     id: uuid::Uuid::new_v4().to_string(),
                     thought_type: ThoughtType::Prediction,
@@ -424,12 +534,9 @@ impl ThinkingLoop {
                 );
                 let _ = self.db.store_prediction(&pred_json);
             }
-            pe
-        } else {
-            0.0
-        };
+        }
 
-        // ── Step 5-6: Record observation with salience ──
+        // Record observation
         let obs_content = format!(
             "Node state captured (uptime {}h, {} endpoints, {} payments)",
             snapshot.uptime_secs / 3600,
@@ -441,7 +548,7 @@ impl ThinkingLoop {
             id: uuid::Uuid::new_v4().to_string(),
             thought_type: ThoughtType::Observation,
             content: obs_content.clone(),
-            context: Some(snapshot_json.clone()),
+            context: Some(snapshot_json),
             created_at: chrono::Utc::now().timestamp(),
             salience: None,
             memory_tier: None,
@@ -452,7 +559,6 @@ impl ThinkingLoop {
             let fp = neuroplastic::content_fingerprint(&obs_content);
             let _ = self.db.increment_pattern(&fp);
             let pattern_counts = self.db.get_pattern_counts(&[fp]).unwrap_or_default();
-
             let (salience, factors) = neuroplastic::compute_salience(
                 &ThoughtType::Observation,
                 &obs_content,
@@ -463,7 +569,6 @@ impl ThinkingLoop {
             );
             let tier = neuroplastic::initial_tier(&ThoughtType::Observation, salience);
             let factors_json = serde_json::to_string(&factors).unwrap_or_default();
-
             self.db.insert_thought_with_salience(
                 &obs_thought,
                 salience,
@@ -476,171 +581,148 @@ impl ThinkingLoop {
             self.db.insert_thought(&obs_thought)?;
         }
 
-        // ── Sync auto-beliefs from snapshot (ground truth) ──
+        // Sync auto-beliefs from snapshot (ground truth)
         self.sync_auto_beliefs(snapshot);
 
-        // If dormant (no API key), stop here
-        let llm = match &self.llm {
+        Ok(())
+    }
+
+    /// Create a plan for the highest-priority active goal.
+    /// Returns None if there are no goals.
+    async fn create_plan(
+        &self,
+        llm: &LlmClient,
+        _snapshot: &NodeSnapshot,
+        nudges: &[crate::db::Nudge],
+    ) -> Result<Option<Plan>, SoulError> {
+        let goals = self.db.get_active_goals()?;
+        let goal = match goals.first() {
             Some(g) => g,
-            None => {
-                tracing::debug!("Soul dormant — observation recorded, skipping LLM");
-                self.increment_cycle_count()?;
-                return Ok(CycleResult {
-                    tool_calls: 0,
-                    decisions: 0,
-                    think_soon: false,
-                    entered_code: false,
-                });
+            None => return Ok(None),
+        };
+
+        // Check if there's already a plan for this goal
+        if let Some(existing) = self.db.get_plan_for_goal(&goal.id)? {
+            if existing.status == PlanStatus::Active {
+                return Ok(Some(existing));
             }
-        };
-
-        // Determine mode for this cycle
-        let mode = AgentMode::Observe;
-
-        // Read persistent memory
-        let memory_content = match persistent_memory::read_or_seed(&self.config.memory_file_path) {
-            Ok(content) => content,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read persistent memory");
-                String::new()
-            }
-        };
-
-        // ── Step 7: Structured thought retrieval (salience-based if neuroplastic) ──
-        // Retrieve actual reasoning thoughts — tool executions are ephemeral and not stored.
-        let (decisions, reasoning, observations, consolidations, reflections) = if neuroplastic {
-            (
-                self.db
-                    .salient_thoughts_by_type(&[ThoughtType::Decision], 3)?,
-                self.db
-                    .salient_thoughts_by_type(&[ThoughtType::Reasoning], 3)?,
-                self.db
-                    .salient_thoughts_by_type(&[ThoughtType::Observation], 2)?,
-                self.db
-                    .salient_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?,
-                self.db
-                    .salient_thoughts_by_type(&[ThoughtType::Reflection], 2)?,
-            )
-        } else {
-            (
-                self.db
-                    .recent_thoughts_by_type(&[ThoughtType::Decision], 3)?,
-                self.db
-                    .recent_thoughts_by_type(&[ThoughtType::Reasoning], 3)?,
-                self.db
-                    .recent_thoughts_by_type(&[ThoughtType::Observation], 2)?,
-                self.db
-                    .recent_thoughts_by_type(&[ThoughtType::MemoryConsolidation], 1)?,
-                self.db
-                    .recent_thoughts_by_type(&[ThoughtType::Reflection], 2)?,
-            )
-        };
-
-        // Merge and sort by created_at DESC
-        let mut recent: Vec<Thought> = Vec::new();
-        recent.extend(decisions);
-        recent.extend(reasoning);
-        recent.extend(observations);
-        recent.extend(consolidations);
-        recent.extend(reflections);
-        recent.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-        // ── Step 8: Reinforce recalled thoughts (Hebbian boost) ──
-        if neuroplastic {
-            let recalled_ids: Vec<String> = recent.iter().map(|t| t.id.clone()).collect();
-            let _ = self.db.reinforce_thoughts(&recalled_ids, 0.05);
         }
 
-        let recent_summary: Vec<String> = recent
-            .iter()
-            .map(|t| {
-                let salience_tag = if neuroplastic {
-                    t.salience
-                        .map(|s| format!(" (salience:{:.2})", s))
-                        .unwrap_or_default()
+        tracing::info!(
+            goal_id = %goal.id,
+            description = %goal.description,
+            "Creating plan for goal"
+        );
+
+        // Get workspace listing for context
+        let workspace_listing = match self
+            .tool_executor
+            .execute(
+                "list_directory",
+                &serde_json::json!({ "path": self.config.workspace_root }),
+            )
+            .await
+        {
+            Ok(r) => r.stdout,
+            Err(_) => "workspace listing unavailable".to_string(),
+        };
+
+        let recent_errors = self.get_recent_errors();
+        let prompt = prompts::planning_prompt(goal, &workspace_listing, nudges, &recent_errors);
+        let system =
+            "You are a software engineering planner. Output ONLY a JSON array of plan steps.";
+
+        match llm.think(system, &prompt).await {
+            Ok(response) => {
+                let steps = self.parse_plan_steps(&response)?;
+                let now = chrono::Utc::now().timestamp();
+                let initial_status = if self.config.require_plan_approval {
+                    PlanStatus::PendingApproval
                 } else {
-                    String::new()
+                    PlanStatus::Active
                 };
-                format!(
-                    "[{}] {}:{} {}",
-                    t.thought_type.as_str(),
-                    chrono::DateTime::from_timestamp(t.created_at, 0)
-                        .map(|dt| dt.format("%H:%M:%S").to_string())
-                        .unwrap_or_else(|| "?".to_string()),
-                    salience_tag,
-                    t.content.chars().take(400).collect::<String>()
-                )
-            })
-            .collect();
+                let plan = Plan {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    goal_id: goal.id.clone(),
+                    steps,
+                    current_step: 0,
+                    status: initial_status,
+                    context: std::collections::HashMap::new(),
+                    replan_count: 0,
+                    created_at: now,
+                    updated_at: now,
+                };
+                self.db.insert_plan(&plan)?;
 
-        let memory_section = if memory_content.is_empty() {
-            String::new()
-        } else {
-            format!("Your persistent memory:\n{}\n\n", memory_content)
-        };
+                // Store plan info for dashboard
+                let _ = self.db.set_state("active_plan_id", &plan.id);
+                let _ = self
+                    .db
+                    .set_state("active_plan_steps", &plan.steps.len().to_string());
 
-        // ── Mutation history ──
-        let mutations_section = match self.db.recent_mutations(5) {
-            Ok(mutations) if !mutations.is_empty() => {
-                let mut lines = vec!["Recent mutations:".to_string()];
-                for m in &mutations {
-                    let date = chrono::DateTime::from_timestamp(m.created_at, 0)
-                        .map(|dt| dt.format("%m-%d %H:%M").to_string())
-                        .unwrap_or_else(|| "?".to_string());
-                    let sha = m
-                        .commit_sha
-                        .as_deref()
-                        .map(|s| &s[..s.len().min(7)])
-                        .unwrap_or("none");
-                    let check = if m.cargo_check_passed { "ok" } else { "FAIL" };
-                    let test = if m.cargo_test_passed { "ok" } else { "FAIL" };
-                    lines.push(format!(
-                        "  {date} [{sha}] check:{check} test:{test} — {}",
-                        m.description.chars().take(80).collect::<String>()
-                    ));
-                }
-                format!("{}\n\n", lines.join("\n"))
+                tracing::info!(
+                    plan_id = %plan.id,
+                    steps = plan.steps.len(),
+                    status = plan.status.as_str(),
+                    "Plan created"
+                );
+                Ok(Some(plan))
             }
-            _ => String::new(),
-        };
-
-        // ── Endpoint summary table ──
-        let endpoints_section = if snapshot.endpoints.is_empty() {
-            String::new()
-        } else {
-            let mut lines = vec!["Endpoints:".to_string()];
-            lines.push(format!(
-                "  {:<20} {:>8} {:>8} {:>8} {:>10}",
-                "slug", "price", "requests", "payments", "revenue"
-            ));
-            for ep in &snapshot.endpoints {
-                lines.push(format!(
-                    "  {:<20} {:>8} {:>8} {:>8} {:>10}",
-                    ep.slug, ep.price, ep.request_count, ep.payment_count, ep.revenue
-                ));
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create plan");
+                Ok(None)
             }
-            format!("{}\n\n", lines.join("\n"))
-        };
+        }
+    }
 
-        // ── Reward breakdown ──
-        let reward_breakdown = if neuroplastic {
-            Some(neuroplastic::compute_reward_signal(
-                snapshot,
-                pacer.prev_snapshot.as_ref(),
-            ))
-        } else {
-            None
-        };
-
-        // ── Current strategy (from previous reflection) ──
-        let strategy_section = match self.db.get_state("current_strategy") {
-            Ok(Some(strategy)) if !strategy.is_empty() => {
-                format!("Current strategy: {strategy}\n\n")
+    /// Create goals when there are none.
+    async fn create_goals(
+        &self,
+        llm: &LlmClient,
+        snapshot: &NodeSnapshot,
+        nudges: &[crate::db::Nudge],
+    ) -> Result<(), SoulError> {
+        // ── First-boot seed: concrete goals, don't ask LLM to hallucinate ──
+        let total_goals_ever = self.db.count_all_goals().unwrap_or(0);
+        if total_goals_ever == 0 {
+            let now = chrono::Utc::now().timestamp();
+            let seed_goals = [
+                (
+                    "Create a utility API endpoint (e.g., keccak256 hashing) in routes/utils.rs and register it on the gateway",
+                    "Endpoint responds to requests and is visible in /endpoints",
+                    5u32,
+                ),
+                (
+                    "Verify node health: check all existing endpoints are reachable, confirm analytics tracking works",
+                    "check_self health returns ok, all registered endpoints respond",
+                    3u32,
+                ),
+            ];
+            for (desc, criteria, priority) in &seed_goals {
+                let goal = Goal {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    description: desc.to_string(),
+                    status: crate::world_model::GoalStatus::Active,
+                    priority: *priority,
+                    success_criteria: criteria.to_string(),
+                    progress_notes: String::new(),
+                    parent_goal_id: None,
+                    retry_count: 0,
+                    created_at: now,
+                    updated_at: now,
+                    completed_at: None,
+                };
+                let _ = self.db.insert_goal(&goal);
             }
-            _ => String::new(),
-        };
+            tracing::info!("First boot — seeded 2 starter goals");
+            return Ok(());
+        }
 
-        // Build adaptive system prompt with situational context
+        tracing::info!("No goals — asking LLM to create goals");
+
+        let beliefs = self.db.get_all_active_beliefs().unwrap_or_default();
+        let recent_errors = self.get_recent_errors();
+        let cycles_since_commit = self.get_cycles_since_last_commit();
         let total_cycles: u64 = self
             .db
             .get_state("total_think_cycles")
@@ -648,454 +730,248 @@ impl ThinkingLoop {
             .flatten()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-
-        // ── Fetch world model beliefs for prompt ──
-        let beliefs = self.db.get_all_active_beliefs().unwrap_or_default();
-        let last_cycle_at: Option<i64> = self
-            .db
-            .get_state("last_think_at")
-            .ok()
-            .flatten()
-            .and_then(|s| s.parse().ok());
-
-        // ── Fetch active goals ──
-        let active_goals = self.db.get_active_goals().unwrap_or_default();
-
-        let think_context = prompts::ThinkContext {
+        let failed_plans = self.db.count_plans_by_status("failed").unwrap_or(0);
+        let prompt = prompts::goal_creation_prompt(
             snapshot,
-            recent_thoughts: &recent,
-            prev_snapshot: pacer.prev_snapshot.as_ref(),
-            boring_streak: pacer.boring_streak,
-            active_streak: pacer.active_streak,
+            &beliefs,
+            nudges,
+            cycles_since_commit,
+            failed_plans,
             total_cycles,
-            prediction_error: if neuroplastic {
-                Some(prediction_error)
-            } else {
-                None
-            },
-            reward_breakdown: reward_breakdown.clone(),
-            beliefs: beliefs.clone(),
-            goals: active_goals,
-            last_cycle_at,
-        };
-
-        // ── Build world model view + user prompt ──
-        let world_model_view = prompts::build_world_model_view(&think_context);
-
-        let user_prompt = format!(
-            "{}{}{}\n\n{}\n\n## Recent Actions\n{}\n\n{}",
-            memory_section,
-            strategy_section,
-            world_model_view,
-            mutations_section,
-            recent_summary.join("\n"),
-            endpoints_section,
+            &recent_errors,
         );
+        let system = "You are an autonomous agent. Output ONLY a JSON array of goal operations.";
 
-        let system_prompt =
-            prompts::adaptive_system_prompt(mode, &self.config, Some(&think_context));
-
-        // Determine if we should use tools
-        let use_tools = self.config.tools_enabled && self.config.llm_api_key.is_some();
-        let (dynamic_tools, meta_tools) = if use_tools && self.config.dynamic_tools_enabled {
-            let dynamic = ToolRegistry::new(
-                self.db.clone(),
-                self.config.workspace_root.clone(),
-                self.config.tool_timeout_secs,
-            )
-            .dynamic_tool_declarations(mode.mode_tag());
-            let meta = ToolRegistry::meta_tool_declarations();
-            (dynamic, meta)
-        } else {
-            (vec![], vec![])
-        };
-        let tool_declarations = if use_tools {
-            mode.available_tools(self.config.coding_enabled, &dynamic_tools, &meta_tools)
-        } else {
-            vec![]
-        };
-
-        // Build initial conversation
-        let mut conversation = vec![ConversationMessage {
-            role: "user".to_string(),
-            parts: vec![ConversationPart::Text(user_prompt)],
-        }];
-
-        // ── Step 9: Agentic tool loop (Phase 1: Observe) ──
-        let use_deep = self.config.direct_push && self.config.autonomous_coding;
-        let phase1_result = run_tool_loop_with_model(
-            llm,
-            &system_prompt,
-            &mut conversation,
-            &tool_declarations,
-            &self.tool_executor,
-            &self.db,
-            AgentMode::Observe.max_tool_calls().min(self.config.max_tool_calls),
-            use_deep,
-        )
-        .await?;
-
-        let mut final_text = phase1_result.text;
-        let mut tool_calls_made = phase1_result.tool_executions.len() as u32;
-        let mut entered_code_mode = false;
-
-        // ── Apply world model updates from LLM output ──
-        let (model_updates_applied, remaining_text) = self.apply_model_updates(&final_text);
-        if model_updates_applied > 0 {
-            tracing::info!(model_updates_applied, "World model updated from LLM output");
-            // Use remaining text (minus the JSON block) as the reasoning text
-            final_text = remaining_text;
-        }
-
-        // ── Phase 2: Observe → Code transition ──
-        // If the soul's output starts with [CODE] and coding is enabled, enter Code mode.
-        let wants_code = final_text.trim_start().starts_with("[CODE]");
-        if wants_code && self.config.coding_enabled && self.config.autonomous_coding {
-            tracing::info!("Soul requested [CODE] — entering phase 2 with code tools");
-            entered_code_mode = true;
-
-            // Build Code-mode tool declarations
-            let code_mode = AgentMode::Code;
-            let (code_dynamic, code_meta) =
-                if self.config.tools_enabled && self.config.dynamic_tools_enabled {
-                    let dynamic = ToolRegistry::new(
-                        self.db.clone(),
-                        self.config.workspace_root.clone(),
-                        self.config.tool_timeout_secs,
-                    )
-                    .dynamic_tool_declarations(code_mode.mode_tag());
-                    let meta = ToolRegistry::meta_tool_declarations();
-                    (dynamic, meta)
-                } else {
-                    (vec![], vec![])
-                };
-            let code_tools =
-                code_mode.available_tools(self.config.coding_enabled, &code_dynamic, &code_meta);
-            let code_system_prompt =
-                prompts::adaptive_system_prompt(code_mode, &self.config, Some(&think_context));
-
-            // Fresh conversation for Phase 2 — don't re-send Phase 1's tool results
-            let phase1_summary = if final_text.len() > 2000 {
-                format!("{}...", &final_text[..2000])
-            } else {
-                final_text.clone()
-            };
-            let mut phase2_conversation = vec![ConversationMessage {
-                role: "user".to_string(),
-                parts: vec![ConversationPart::Text(format!(
-                    "Phase 1 (Observe) concluded:\n{}\n\n\
-                     You are now in CODE mode. Proceed with the action described above. \
-                     Use edit_file, write_file, and commit_changes tools.",
-                    phase1_summary
-                ))],
-            }];
-
-            let code_budget = AgentMode::Code.max_tool_calls().min(self.config.max_tool_calls);
-            let phase2_result = run_tool_loop_with_model(
-                llm,
-                &code_system_prompt,
-                &mut phase2_conversation,
-                &code_tools,
-                &self.tool_executor,
-                &self.db,
-                code_budget,
-                use_deep,
-            )
-            .await?;
-
-            tool_calls_made += phase2_result.tool_executions.len() as u32;
-            if !phase2_result.text.is_empty() {
-                final_text = phase2_result.text;
+        match llm.think(system, &prompt).await {
+            Ok(response) => {
+                let (applied, _) = self.apply_model_updates(&response);
+                tracing::info!(goals_created = applied, "Goals created");
             }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create goals");
+            }
+        }
+        Ok(())
+    }
 
-            // ── Phase 3: Post-code reflection ──
-            // Brief verification phase: check health/analytics, record learnings.
-            tracing::info!("Phase 3: post-code reflection");
+    /// Complete a plan — reflect and mark done.
+    async fn complete_plan(
+        &self,
+        llm: &LlmClient,
+        plan: &mut Plan,
+    ) -> Result<CycleResult, SoulError> {
+        tracing::info!(plan_id = %plan.id, "Plan complete — reflecting");
 
-            let reflect_mode = AgentMode::Observe;
-            let reflect_tools = reflect_mode.available_tools(false, &[], &[]);
-            let reflect_system =
-                prompts::adaptive_system_prompt(reflect_mode, &self.config, Some(&think_context));
+        let goal = self.db.get_goal(&plan.goal_id)?;
+        let goal = goal.unwrap_or_else(|| Goal {
+            id: plan.goal_id.clone(),
+            description: "unknown goal".to_string(),
+            status: crate::world_model::GoalStatus::Active,
+            priority: 3,
+            success_criteria: String::new(),
+            progress_notes: String::new(),
+            parent_goal_id: None,
+            retry_count: 0,
+            created_at: plan.created_at,
+            updated_at: plan.updated_at,
+            completed_at: None,
+        });
 
-            // Build reflection context: what was just changed + current reward signal
-            let phase2_summary = if final_text.len() > 1000 {
-                format!("{}...", &final_text[..1000])
-            } else {
-                final_text.clone()
-            };
-            let mut reflect_context = format!(
-                "Code phase result:\n{}\n\nREFLECT on what just happened.\n\n",
-                phase2_summary
-            );
-
-            // Include the most recent mutation
-            if let Ok(mutations) = self.db.recent_mutations(1) {
-                if let Some(m) = mutations.first() {
+        // Get recent mutation for context
+        let mutation_summary = match self.db.recent_mutations(1) {
+            Ok(mutations) => mutations
+                .first()
+                .map(|m| {
                     let sha = m
                         .commit_sha
                         .as_deref()
                         .map(|s| &s[..s.len().min(7)])
                         .unwrap_or("none");
-                    let check = if m.cargo_check_passed { "PASS" } else { "FAIL" };
-                    let test = if m.cargo_test_passed { "PASS" } else { "FAIL" };
-                    reflect_context.push_str(&format!(
-                        "Last commit: [{sha}] check:{check} test:{test}\n  {}\n  files: {}\n\n",
-                        m.description, m.files_changed
-                    ));
-                }
-            }
+                    let check = if m.cargo_check_passed { "ok" } else { "FAIL" };
+                    let test = if m.cargo_test_passed { "ok" } else { "FAIL" };
+                    format!("[{sha}] check:{check} test:{test} — {}", m.description)
+                })
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
 
-            // Include reward signal
-            if let Some(ref rb) = reward_breakdown {
-                if !rb.new_endpoints.is_empty() {
-                    reflect_context
-                        .push_str(&format!("New endpoints: {}\n", rb.new_endpoints.join(", ")));
-                }
-                if !rb.growing_endpoints.is_empty() {
-                    reflect_context.push_str(&format!(
-                        "Growing (earning): {}\n",
-                        rb.growing_endpoints.join(", ")
-                    ));
-                }
-                if !rb.stagnant_endpoints.is_empty() {
-                    reflect_context.push_str(&format!(
-                        "Stagnant (zero payments): {}\n",
-                        rb.stagnant_endpoints.join(", ")
-                    ));
-                }
-                reflect_context.push_str(&format!("Reward signal: {:.2}\n\n", rb.total_reward));
-            }
+        let prompt = prompts::reflection_prompt(
+            &goal,
+            plan.steps.len(),
+            &mutation_summary,
+            self.get_cycles_since_last_commit(),
+            self.db.count_plans_by_status("failed").unwrap_or(0),
+        );
+        let system =
+            "You are reflecting on completed work. Output a JSON array of goal/belief updates.";
 
-            // Include active goals with endpoint reward signal matching
-            let reflect_goals = self.db.get_active_goals().unwrap_or_default();
-            if !reflect_goals.is_empty() {
-                reflect_context.push_str("Active goals:\n");
-                for g in &reflect_goals {
-                    let mut signals = Vec::new();
-                    // Match goal description against endpoint reward signals
-                    if let Some(ref rb) = reward_breakdown {
-                        let desc_lower = g.description.to_lowercase();
-                        for slug in &rb.new_endpoints {
-                            if desc_lower.contains(&slug.to_lowercase()) {
-                                signals.push(format!("NEW endpoint '{slug}'"));
-                            }
-                        }
-                        for slug in &rb.growing_endpoints {
-                            if desc_lower.contains(&slug.to_lowercase()) {
-                                signals.push(format!("GROWING '{slug}'"));
-                            }
-                        }
-                        for slug in &rb.stagnant_endpoints {
-                            if desc_lower.contains(&slug.to_lowercase()) {
-                                signals.push(format!("STAGNANT '{slug}'"));
-                            }
-                        }
-                    }
-                    let signal_str = if signals.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" → {}", signals.join(", "))
-                    };
-                    reflect_context.push_str(&format!(
-                        "- [P{}] {} (id:{}){}\n",
-                        g.priority,
-                        g.description,
-                        &g.id[..g.id.len().min(8)],
-                        signal_str,
-                    ));
-                }
-                reflect_context.push('\n');
-            }
+        match llm.think(system, &prompt).await {
+            Ok(response) => {
+                let (applied, _) = self.apply_model_updates(&response);
+                tracing::info!(updates_applied = applied, "Reflection applied");
 
-            reflect_context.push_str(
-                "VERIFY: use check_self to check health and analytics. \
-                 Did your changes advance any active goals? If so, update_goal with progress or complete_goal. \
-                 Record what you learned with update_memory. \
-                 End with [STRATEGY] followed by what you plan to do next cycle. \
-                 Keep it brief.",
-            );
-
-            // Fresh conversation for Phase 3 — don't re-send Phase 1+2's tool results
-            let mut phase3_conversation = vec![ConversationMessage {
-                role: "user".to_string(),
-                parts: vec![ConversationPart::Text(reflect_context)],
-            }];
-
-            let phase3_result = run_tool_loop_with_model(
-                llm,
-                &reflect_system,
-                &mut phase3_conversation,
-                &reflect_tools,
-                &self.tool_executor,
-                &self.db,
-                5,     // tight budget
-                false, // non-deep model
-            )
-            .await?;
-
-            tool_calls_made += phase3_result.tool_executions.len() as u32;
-
-            // Record reflection thought with dynamic salience tied to reward
-            if !phase3_result.text.is_empty() {
-                let reflect_reward = reward_breakdown
-                    .as_ref()
-                    .map(|rb| rb.total_reward)
-                    .unwrap_or(0.0);
-                // Base salience 0.5 + reward contribution (max 0.3) = 0.5..0.8
-                let reflect_salience = (0.5 + reflect_reward * 0.375).min(0.8);
+                // Record reflection thought
                 let reflection = Thought {
                     id: uuid::Uuid::new_v4().to_string(),
                     thought_type: ThoughtType::Reflection,
-                    content: phase3_result.text.clone(),
+                    content: response.chars().take(500).collect(),
                     context: None,
                     created_at: chrono::Utc::now().timestamp(),
                     salience: None,
                     memory_tier: None,
                     strength: None,
                 };
-                if neuroplastic {
-                    let tier =
-                        neuroplastic::initial_tier(&ThoughtType::Reflection, reflect_salience);
-                    let factors_json = format!(
-                        r#"{{"novelty":0.5,"prediction_error":{},"reward_signal":{},"recency_boost":0.1,"reinforcement":0.0}}"#,
-                        prediction_error, reflect_reward
-                    );
-                    self.db.insert_thought_with_salience(
+                if self.config.neuroplastic_enabled {
+                    let _ = self.db.insert_thought_with_salience(
                         &reflection,
-                        reflect_salience,
-                        &factors_json,
-                        tier.as_str(),
+                        0.6,
+                        r#"{"novelty":0.5,"prediction_error":0.0,"reward_signal":0.3,"recency_boost":0.1,"reinforcement":0.0}"#,
+                        "working",
                         1.0,
-                        Some(prediction_error),
-                    )?;
+                        None,
+                    );
                 } else {
-                    self.db.insert_thought(&reflection)?;
+                    let _ = self.db.insert_thought(&reflection);
                 }
-                tracing::info!("Post-code reflection recorded");
-
-                // Extract [STRATEGY] if present — store as current strategy for next cycle
-                for line in phase3_result.text.lines() {
-                    let trimmed = line.trim();
-                    if let Some(strategy_text) = trimmed.strip_prefix("[STRATEGY]") {
-                        let strategy = strategy_text.trim();
-                        if !strategy.is_empty() {
-                            let _ = self.db.set_state("current_strategy", strategy);
-                            tracing::info!(strategy, "Strategy recorded from reflection");
-                        }
-                    }
-                }
-
-                // Use reflection text as final output if non-empty
-                final_text = phase3_result.text;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Reflection failed");
             }
         }
 
-        let mut decisions_made = 0u32;
-        let think_soon = final_text.contains("[THINK_SOON]");
+        // Mark plan as completed
+        plan.status = PlanStatus::Completed;
+        self.db.update_plan(plan)?;
+        let _ = self.db.set_state("active_plan_id", "");
 
-        // ── Step 10-11: Record reasoning/decisions with salience ──
-        if !final_text.is_empty() {
-            let reasoning_thought = Thought {
-                id: uuid::Uuid::new_v4().to_string(),
-                thought_type: ThoughtType::Reasoning,
-                content: final_text.clone(),
-                context: Some(snapshot_json),
-                created_at: chrono::Utc::now().timestamp(),
-                salience: None,
-                memory_tier: None,
-                strength: None,
-            };
-
-            if neuroplastic {
-                let fp = neuroplastic::content_fingerprint(&final_text);
-                let _ = self.db.increment_pattern(&fp);
-                let pattern_counts = self.db.get_pattern_counts(&[fp]).unwrap_or_default();
-
-                let (salience, factors) = neuroplastic::compute_salience(
-                    &ThoughtType::Reasoning,
-                    &final_text,
-                    snapshot,
-                    pacer.prev_snapshot.as_ref(),
-                    prediction_error,
-                    &pattern_counts,
-                );
-                let tier = neuroplastic::initial_tier(&ThoughtType::Reasoning, salience);
-                let factors_json = serde_json::to_string(&factors).unwrap_or_default();
-
-                self.db.insert_thought_with_salience(
-                    &reasoning_thought,
-                    salience,
-                    &factors_json,
-                    tier.as_str(),
-                    1.0,
-                    Some(prediction_error),
-                )?;
-            } else {
-                self.db.insert_thought(&reasoning_thought)?;
-            }
-
-            // Extract and record decisions (lines starting with [DECISION])
-            for line in final_text.lines() {
-                let trimmed = line.trim();
-                if let Some(decision_text) = trimmed.strip_prefix("[DECISION]") {
-                    let decision = Thought {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        thought_type: ThoughtType::Decision,
-                        content: decision_text.trim().to_string(),
-                        context: None,
-                        created_at: chrono::Utc::now().timestamp(),
-                        salience: None,
-                        memory_tier: None,
-                        strength: None,
-                    };
-
-                    if neuroplastic {
-                        let fp = neuroplastic::content_fingerprint(decision_text.trim());
-                        let _ = self.db.increment_pattern(&fp);
-                        let pattern_counts = self.db.get_pattern_counts(&[fp]).unwrap_or_default();
-                        let (salience, factors) = neuroplastic::compute_salience(
-                            &ThoughtType::Decision,
-                            decision_text.trim(),
-                            snapshot,
-                            pacer.prev_snapshot.as_ref(),
-                            prediction_error,
-                            &pattern_counts,
-                        );
-                        let tier = neuroplastic::initial_tier(&ThoughtType::Decision, salience);
-                        let factors_json = serde_json::to_string(&factors).unwrap_or_default();
-                        self.db.insert_thought_with_salience(
-                            &decision,
-                            salience,
-                            &factors_json,
-                            tier.as_str(),
-                            1.0,
-                            None,
-                        )?;
-                    } else {
-                        self.db.insert_thought(&decision)?;
-                    }
-
-                    tracing::info!(decision = decision_text.trim(), "Soul decision recorded");
-                    decisions_made += 1;
-                }
-            }
-        }
-
-        // Update state
         self.increment_cycle_count()?;
-
-        // Decay, promotion, belief decay, and consolidation are now handled
-        // by the mind's subconscious loop (x402-mind crate).
-
         Ok(CycleResult {
-            tool_calls: tool_calls_made,
-            decisions: decisions_made,
-            think_soon,
-            entered_code: entered_code_mode,
+            step_type: StepType::PlanCompleted,
+            entered_code: false,
+            summary: format!("plan {} completed ({} steps)", plan.id, plan.steps.len()),
         })
     }
 
-    /// Increment the total_think_cycles counter and update last_think_at.
+    /// Handle a failed step — replan or fail the plan.
+    async fn handle_step_failure(
+        &self,
+        llm: &LlmClient,
+        plan: &mut Plan,
+        step_desc: &str,
+        error: &str,
+    ) -> Result<CycleResult, SoulError> {
+        // Track error and increment goal retry count
+        self.append_recent_error(error);
+        let _ = self.db.increment_goal_retry(&plan.goal_id);
+
+        if plan.replan_count >= 3 {
+            tracing::warn!(plan_id = %plan.id, "Max replans reached — failing plan");
+            plan.status = PlanStatus::Failed;
+            self.db.update_plan(plan)?;
+            let _ = self.db.set_state("active_plan_id", "");
+            self.increment_cycle_count()?;
+            return Ok(CycleResult {
+                step_type: StepType::Llm,
+                entered_code: false,
+                summary: format!("plan {} failed after 3 replans", plan.id),
+            });
+        }
+
+        // Ask LLM to replan
+        let goal = self.db.get_goal(&plan.goal_id)?;
+        let goal = goal.unwrap_or_else(|| Goal {
+            id: plan.goal_id.clone(),
+            description: "unknown goal".to_string(),
+            status: crate::world_model::GoalStatus::Active,
+            priority: 3,
+            success_criteria: String::new(),
+            progress_notes: String::new(),
+            parent_goal_id: None,
+            retry_count: 0,
+            created_at: plan.created_at,
+            updated_at: plan.updated_at,
+            completed_at: None,
+        });
+
+        let prompt = prompts::replan_prompt(&goal, step_desc, error);
+        let system =
+            "You are a software engineering planner. Output ONLY a JSON array of plan steps.";
+
+        match llm.think(system, &prompt).await {
+            Ok(response) => {
+                let new_steps = self.parse_plan_steps(&response)?;
+                // Replace remaining steps with new steps
+                plan.steps.truncate(plan.current_step);
+                plan.steps.extend(new_steps);
+                plan.replan_count += 1;
+                self.db.update_plan(plan)?;
+
+                tracing::info!(
+                    plan_id = %plan.id,
+                    replan_count = plan.replan_count,
+                    new_total_steps = plan.steps.len(),
+                    "Plan replanned"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Replan failed — marking plan as failed");
+                plan.status = PlanStatus::Failed;
+                self.db.update_plan(plan)?;
+                let _ = self.db.set_state("active_plan_id", "");
+            }
+        }
+
+        self.increment_cycle_count()?;
+        Ok(CycleResult {
+            step_type: StepType::Llm,
+            entered_code: false,
+            summary: format!("replanned after failure: {step_desc}"),
+        })
+    }
+
+    /// Parse plan steps from LLM output (find JSON array).
+    fn parse_plan_steps(&self, text: &str) -> Result<Vec<PlanStep>, SoulError> {
+        // Try to find a JSON array in the response
+        if let Some((json_str, _, _)) = extract_json_array(text) {
+            match serde_json::from_str::<Vec<PlanStep>>(&json_str) {
+                Ok(mut steps) => {
+                    // Enforce max steps
+                    let max = self.config.max_plan_steps;
+                    if steps.len() > max {
+                        steps.truncate(max);
+                    }
+                    if steps.is_empty() {
+                        return Err(SoulError::Config("LLM returned empty plan".to_string()));
+                    }
+                    return Ok(steps);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to parse plan steps JSON");
+                }
+            }
+        }
+
+        // Fallback: try parsing the entire text as JSON
+        match serde_json::from_str::<Vec<PlanStep>>(text.trim()) {
+            Ok(mut steps) => {
+                let max = self.config.max_plan_steps;
+                if steps.len() > max {
+                    steps.truncate(max);
+                }
+                if steps.is_empty() {
+                    Err(SoulError::Config("LLM returned empty plan".to_string()))
+                } else {
+                    Ok(steps)
+                }
+            }
+            Err(e) => Err(SoulError::Config(format!(
+                "Cannot parse plan steps: {e}. Response: {}",
+                &text[..text.len().min(200)]
+            ))),
+        }
+    }
+
+    /// Increment the total_think_cycles counter, cycles_since_last_commit, and update last_think_at.
     fn increment_cycle_count(&self) -> Result<(), SoulError> {
         let current: u64 = self
             .db
@@ -1106,14 +982,69 @@ impl ThinkingLoop {
             .set_state("total_think_cycles", &(current + 1).to_string())?;
         self.db
             .set_state("last_think_at", &chrono::Utc::now().timestamp().to_string())?;
+
+        // Increment cycles_since_last_commit
+        let since_commit: u64 = self
+            .db
+            .get_state("cycles_since_last_commit")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        self.db
+            .set_state("cycles_since_last_commit", &(since_commit + 1).to_string())?;
+
         Ok(())
+    }
+
+    /// Reset cycles_since_last_commit (called when a commit succeeds).
+    fn reset_commit_counter(&self) {
+        let _ = self.db.set_state("cycles_since_last_commit", "0");
+    }
+
+    /// Append an error to the recent_errors list (capped at 5).
+    fn append_recent_error(&self, error: &str) {
+        let truncated: String = error.chars().take(200).collect();
+        let mut errors: Vec<String> = self
+            .db
+            .get_state("recent_errors")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        errors.push(truncated);
+        if errors.len() > 5 {
+            errors.drain(..errors.len() - 5);
+        }
+        if let Ok(json) = serde_json::to_string(&errors) {
+            let _ = self.db.set_state("recent_errors", &json);
+        }
+    }
+
+    /// Get recent errors from soul_state.
+    fn get_recent_errors(&self) -> Vec<String> {
+        self.db
+            .get_state("recent_errors")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Get cycles since last commit from soul_state.
+    fn get_cycles_since_last_commit(&self) -> u64 {
+        self.db
+            .get_state("cycles_since_last_commit")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
     }
 
     /// Sync auto-beliefs from a snapshot: ground truth that doesn't need the LLM.
     fn sync_auto_beliefs(&self, snapshot: &NodeSnapshot) {
         let now = chrono::Utc::now().timestamp();
 
-        // Node-level beliefs
         let node_beliefs = [
             (
                 "uptime_hours",
@@ -1160,7 +1091,6 @@ impl ThinkingLoop {
             }
         }
 
-        // Per-endpoint beliefs
         for ep in &snapshot.endpoints {
             let ep_beliefs = [
                 ("payment_count", ep.payment_count.to_string()),
@@ -1192,7 +1122,6 @@ impl ThinkingLoop {
     /// Parse and apply model updates from LLM output.
     /// Returns (number of updates applied, remaining free-text).
     fn apply_model_updates(&self, text: &str) -> (u32, String) {
-        // Find JSON array in the output
         let json_block = extract_json_array(text);
         let (updates_applied, remaining_text) = match json_block {
             Some((json_str, before, after)) => {
@@ -1203,30 +1132,25 @@ impl ThinkingLoop {
                         for update in &updates {
                             match self.apply_single_update(update, now) {
                                 Ok(true) => applied += 1,
-                                Ok(false) => {
-                                    tracing::debug!(?update, "Model update had no effect");
-                                }
+                                Ok(false) => {}
                                 Err(e) => {
-                                    tracing::warn!(error = %e, ?update, "Failed to apply model update");
+                                    tracing::warn!(error = %e, ?update, "Failed to apply update");
                                 }
                             }
                         }
-                        tracing::info!(applied, total = updates.len(), "Model updates processed");
-                        // Remaining text is everything outside the JSON block
                         let remaining = format!("{}{}", before.trim(), after.trim())
                             .trim()
                             .to_string();
                         (applied, remaining)
                     }
                     Err(e) => {
-                        tracing::debug!(error = %e, "LLM output didn't contain valid model updates JSON — treating as free-text");
+                        tracing::debug!(error = %e, "Not valid model updates JSON");
                         (0, text.to_string())
                     }
                 }
             }
             None => (0, text.to_string()),
         };
-
         (updates_applied, remaining_text)
     }
 
@@ -1262,7 +1186,6 @@ impl ThinkingLoop {
                 value,
                 evidence,
             } => {
-                // Get the belief, update its value, re-upsert
                 let beliefs = self.db.get_all_active_beliefs()?;
                 if let Some(existing) = beliefs.iter().find(|b| b.id == *id) {
                     let updated = Belief {
@@ -1283,14 +1206,13 @@ impl ThinkingLoop {
             }
             ModelUpdate::Confirm { id } => self.db.confirm_belief(id),
             ModelUpdate::Invalidate { id, reason } => self.db.invalidate_belief(id, reason),
-            // ── Goal operations ──
             ModelUpdate::CreateGoal {
                 description,
                 success_criteria,
                 priority,
                 parent_goal_id,
             } => {
-                use crate::world_model::{Goal, GoalStatus};
+                use crate::world_model::GoalStatus;
                 let goal = Goal {
                     id: uuid::Uuid::new_v4().to_string(),
                     description: description.clone(),
@@ -1304,10 +1226,9 @@ impl ThinkingLoop {
                     updated_at: now,
                     completed_at: None,
                 };
-                // Cap at 10 active goals to prevent goal sprawl
                 let active_count = self.db.get_active_goals().map(|g| g.len()).unwrap_or(0);
                 if active_count >= 10 {
-                    tracing::warn!("Goal cap reached (10 active) — refusing create_goal");
+                    tracing::warn!("Goal cap reached (10 active)");
                     return Ok(false);
                 }
                 self.db.insert_goal(&goal)?;
@@ -1324,98 +1245,138 @@ impl ThinkingLoop {
                 self.db.update_goal(goal_id, status_str, notes_str, None)
             }
             ModelUpdate::CompleteGoal { goal_id, outcome } => {
-                // Fetch goal description before completing
-                let goal_desc = self
-                    .db
-                    .get_goal(goal_id)
-                    .ok()
-                    .flatten()
-                    .map(|g| g.description.clone())
-                    .unwrap_or_default();
-
                 let notes = if outcome.is_empty() {
                     None
                 } else {
                     Some(outcome.as_str())
                 };
-                let result = self
-                    .db
-                    .update_goal(goal_id, Some("completed"), notes, Some(now));
-
-                // Record high-salience Decision thought for completed goals
-                if matches!(result, Ok(true)) && !goal_desc.is_empty() {
-                    let content = format!(
-                        "[GOAL COMPLETED] {}: {}",
-                        goal_desc,
-                        if outcome.is_empty() { "done" } else { outcome }
-                    );
-                    let thought = Thought {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        thought_type: ThoughtType::Decision,
-                        content,
-                        context: Some(format!("goal_id:{goal_id}")),
-                        created_at: now,
-                        salience: None,
-                        memory_tier: None,
-                        strength: None,
-                    };
-                    // High salience — successful goal completion is very memorable
-                    let _ = self.db.insert_thought_with_salience(
-                        &thought,
-                        0.85,
-                        r#"{"novelty":0.5,"prediction_error":0.0,"reward_signal":0.8,"recency_boost":0.1,"reinforcement":0.0}"#,
-                        "long_term",
-                        1.0,
-                        None,
-                    );
-                }
-                result
+                self.db
+                    .update_goal(goal_id, Some("completed"), notes, Some(now))
             }
             ModelUpdate::AbandonGoal { goal_id, reason } => {
-                let goal_desc = self
-                    .db
-                    .get_goal(goal_id)
-                    .ok()
-                    .flatten()
-                    .map(|g| g.description.clone())
-                    .unwrap_or_default();
-
-                let result = self
-                    .db
-                    .update_goal(goal_id, Some("abandoned"), Some(reason.as_str()), Some(now));
-
-                // Record moderate-salience Decision thought for abandoned goals (learn from failure)
-                if matches!(result, Ok(true)) && !goal_desc.is_empty() {
-                    let content =
-                        format!("[GOAL ABANDONED] {}: {}", goal_desc, reason);
-                    let thought = Thought {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        thought_type: ThoughtType::Decision,
-                        content,
-                        context: Some(format!("goal_id:{goal_id}")),
-                        created_at: now,
-                        salience: None,
-                        memory_tier: None,
-                        strength: None,
-                    };
-                    let _ = self.db.insert_thought_with_salience(
-                        &thought,
-                        0.6,
-                        r#"{"novelty":0.3,"prediction_error":0.3,"reward_signal":0.0,"recency_boost":0.1,"reinforcement":0.0}"#,
-                        "working",
-                        1.0,
-                        None,
-                    );
-                }
-                result
+                self.db
+                    .update_goal(goal_id, Some("abandoned"), Some(reason.as_str()), Some(now))
             }
+        }
+    }
+
+    /// Background housekeeping: decay, promotion, belief decay, consolidation.
+    /// Ported from mind crate's subconscious loop — runs inline, no separate task.
+    fn housekeeping(&self) {
+        let cycle_count: u64 = self
+            .db
+            .get_state("total_think_cycles")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Every 10 cycles: decay + promote + belief decay
+        if cycle_count > 0 && cycle_count.is_multiple_of(10) {
+            match self.db.run_decay_cycle(self.config.prune_threshold) {
+                Ok((decayed, pruned)) => {
+                    if decayed > 0 || pruned > 0 {
+                        tracing::info!(decayed, pruned, "Housekeeping: decay cycle");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "Housekeeping: decay failed"),
+            }
+
+            match self.db.promote_salient_sensory(0.6) {
+                Ok(promoted) => {
+                    if promoted > 0 {
+                        tracing::info!(promoted, "Housekeeping: promotion");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "Housekeeping: promotion failed"),
+            }
+
+            match self.db.decay_beliefs() {
+                Ok((dh, dm, da)) => {
+                    if dh > 0 || dm > 0 || da > 0 {
+                        tracing::info!(
+                            demoted_high = dh,
+                            demoted_med = dm,
+                            deactivated = da,
+                            "Housekeeping: belief decay"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "Housekeeping: belief decay failed"),
+            }
+        }
+
+        // Every 40 cycles: simple consolidation (no LLM — save tokens for coding)
+        if cycle_count > 0 && cycle_count.is_multiple_of(40) {
+            self.simple_consolidate();
+        }
+    }
+
+    /// Simple memory consolidation: fetch recent thoughts, concatenate, store as MemoryConsolidation.
+    /// No LLM — keeps token budget for actual coding work.
+    fn simple_consolidate(&self) {
+        let thoughts = match self.db.recent_thoughts_by_type(
+            &[
+                ThoughtType::Reasoning,
+                ThoughtType::Decision,
+                ThoughtType::Observation,
+                ThoughtType::Reflection,
+                ThoughtType::Prediction,
+            ],
+            20,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(error = %e, "Consolidation: failed to fetch thoughts");
+                return;
+            }
+        };
+
+        if thoughts.len() < 5 {
+            return;
+        }
+
+        let entries: Vec<String> = thoughts
+            .iter()
+            .map(|t| {
+                let truncated: String = t.content.chars().take(100).collect();
+                format!("[{}] {}", t.thought_type.as_str(), truncated)
+            })
+            .collect();
+
+        let summary = format!(
+            "[Memory consolidation ({} thoughts)]\n{}",
+            thoughts.len(),
+            entries.join("\n")
+        );
+
+        let consolidation = Thought {
+            id: uuid::Uuid::new_v4().to_string(),
+            thought_type: ThoughtType::MemoryConsolidation,
+            content: summary,
+            context: None,
+            created_at: chrono::Utc::now().timestamp(),
+            salience: None,
+            memory_tier: None,
+            strength: None,
+        };
+
+        match self.db.insert_thought_with_salience(
+            &consolidation,
+            0.9,
+            r#"{"novelty":0.8,"prediction_error":0.0,"reward_signal":0.0,"recency_boost":0.1,"reinforcement":0.0}"#,
+            "long_term",
+            1.0,
+            None,
+        ) {
+            Ok(()) => tracing::info!("Housekeeping: memory consolidation recorded"),
+            Err(e) => tracing::warn!(error = %e, "Housekeeping: consolidation insert failed"),
         }
     }
 }
 
 /// Extract the first JSON array from text, returning (json_str, text_before, text_after).
 fn extract_json_array(text: &str) -> Option<(String, String, String)> {
-    // Find the first '[' that starts a JSON array
     let start = text.find('[')?;
     let bytes = text.as_bytes();
     let mut depth = 0i32;
@@ -1466,8 +1427,6 @@ pub struct ToolLoopResult {
 
 /// Run the agentic tool loop: repeatedly call the LLM, execute any tool calls,
 /// and return the final text response plus a log of all tool executions.
-/// Run the agentic tool loop: repeatedly call the LLM, execute any tool calls,
-/// and return the final text response plus a log of all tool executions.
 /// When `use_deep` is true, uses the deeper/think model (e.g. Gemini Pro).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_tool_loop_with_model(
@@ -1500,17 +1459,12 @@ pub(crate) async fn run_tool_loop_with_model(
             }
             LlmResult::FunctionCall(fc) => {
                 if tool_calls_made >= max_tool_calls {
-                    tracing::warn!("Soul hit max tool calls ({max_tool_calls}), stopping");
+                    tracing::warn!("Hit max tool calls ({max_tool_calls}), stopping");
                     break;
                 }
 
-                tracing::info!(
-                    tool = %fc.name,
-                    args = %fc.args,
-                    "Soul executing tool"
-                );
+                tracing::info!(tool = %fc.name, args = %fc.args, "Executing tool");
 
-                // Execute the tool
                 let tool_result = match tool_executor.execute(&fc.name, &fc.args).await {
                     Ok(r) => r,
                     Err(e) => {
@@ -1524,7 +1478,6 @@ pub(crate) async fn run_tool_loop_with_model(
                     }
                 };
 
-                // Record for return value
                 let tool_summary = summarize_tool_call(&fc.name, &fc.args);
                 tool_executions.push(ToolExecution {
                     command: tool_summary,
@@ -1534,13 +1487,11 @@ pub(crate) async fn run_tool_loop_with_model(
                     duration_ms: tool_result.duration_ms,
                 });
 
-                // Append model's function call to conversation
                 conversation.push(ConversationMessage {
                     role: "model".to_string(),
                     parts: vec![ConversationPart::FunctionCall(fc.clone())],
                 });
 
-                // Append function response to conversation
                 let response_value = serde_json::to_value(&tool_result).unwrap_or_default();
                 conversation.push(ConversationMessage {
                     role: "user".to_string(),
@@ -1561,7 +1512,7 @@ pub(crate) async fn run_tool_loop_with_model(
     })
 }
 
-/// Create a human-readable summary of a tool call for logging/thought recording.
+/// Create a human-readable summary of a tool call for logging.
 fn summarize_tool_call(name: &str, args: &serde_json::Value) -> String {
     match name {
         "execute_shell" => args
