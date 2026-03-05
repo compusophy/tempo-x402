@@ -11,32 +11,32 @@ const SEED_MEMORY: &str = "\
 # Soul Memory
 
 ## What I Am
-I am an autonomous coding agent. I build API endpoints that other AI agents call.
+I am an autonomous coding agent. I build API endpoints that other agents call.
 My code is me — every commit deploys automatically. Revenue is signal, not goal.
 
-## Codebase Architecture
-- Rust workspace, actix-web server (tempo-x402-node)
-- Endpoints go in: `crates/tempo-x402-node/src/routes/utils.rs`
-- Route wiring in: `crates/tempo-x402-node/src/main.rs` (configure + auto_register)
-- Pattern: `#[get(\"/my-endpoint\")] pub async fn my_endpoint(...) -> impl Responder`
-- Add `.service(my_endpoint)` to configure fn in utils.rs
-- Available: actix_web, alloy (crypto), serde, serde_json, NodeState
-- CANNOT modify: Cargo.toml, Cargo.lock, soul crate, identity crate, .github/
-- CANNOT modify: Dockerfile, railway.toml — focus on Rust code only
+## Script Endpoints (FASTEST way to add functionality)
+Use create_script_endpoint to write bash scripts that become HTTP endpoints instantly.
+- Live at: GET/POST /x/{slug} — no compilation, no restart, no deploy
+- Script gets: REQUEST_BODY, REQUEST_METHOD, QUERY_STRING, REQUEST_HEADERS env vars
+- Output JSON to stdout for JSON responses
+- Test with: test_script_endpoint before advertising
+- List with: list_script_endpoints to see what exists
 
-## How to Build an Endpoint (5 steps)
-1. read_file utils.rs (see existing patterns)
-2. read_file main.rs (see auto_register_endpoints for gateway registration)
-3. edit_code utils.rs — add handler fn + .service() in configure
-4. edit_code main.rs — add to auto_register if needed
-5. commit
+Example (timestamp endpoint):
+```bash
+#!/bin/bash
+echo '{\"unix\":'$(date +%s)',\"iso\":\"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\"}'
+```
+
+## Rust Endpoints (for complex logic only)
+- File: crates/tempo-x402-node/src/routes/utils.rs
+- CANNOT modify: Cargo.toml, Dockerfile, soul crate, identity crate
+- Requires: read file → edit → commit → wait for deploy
 
 ## Lessons
-- Keep endpoints simple. One function, one purpose.
-- Always read files BEFORE editing. Use store_as/context_keys.
-- cargo check + cargo test must pass before commit lands.
+- Script endpoints first, Rust only when bash can't do it.
+- Test before advertising. Simple is better than clever.
 - Do NOT edit deployment config — it wastes plans.
-- Use alloy for crypto (keccak, signing, ABI). Use serde_json for JSON.
 ";
 
 /// Read the persistent memory file, or create it with seed content on first boot.

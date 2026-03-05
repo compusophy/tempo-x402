@@ -773,7 +773,9 @@ async fn main() -> std::io::Result<()> {
             .configure(crate::routes::instance::configure)
             .configure(crate::routes::clone::configure)
             .configure(crate::routes::soul::configure)
-            .configure(crate::routes::utils::configure);
+            .configure(crate::routes::utils::configure)
+            // Script endpoints — soul-created dynamic handlers (no compilation needed)
+            .configure(crate::routes::scripts::configure);
 
         // Mount facilitator HTTP routes if embedded
         if let Some(ref fac_data) = facilitator_data {

@@ -205,24 +205,21 @@ pub fn planning_prompt(
          Progress so far: {}\n\n\
          # Workspace\n\
          {}{}\n\n\
-         # Architecture — How to Add Endpoints\n\
-         Your node is an actix-web server. New utility endpoints go in `crates/tempo-x402-node/src/routes/utils.rs`.\n\
-         Pattern for adding a new endpoint:\n\
-         1. Read `crates/tempo-x402-node/src/routes/utils.rs` (store_as: utils_code) — see existing endpoints\n\
-         2. Read `crates/tempo-x402-node/src/main.rs` (store_as: main_code) — see how routes are registered\n\
-         3. Edit `crates/tempo-x402-node/src/routes/utils.rs` to add your new handler function + configure entry\n\
-         4. If the endpoint needs to be registered with the gateway, edit `main.rs` to add it to auto_register_endpoints()\n\
-         5. Commit\n\n\
-         Existing pattern (from utils.rs):\n\
-         ```rust\n\
-         #[get(\"/your-endpoint\")]\n\
-         pub async fn your_endpoint(state: web::Data<NodeState>) -> impl Responder {{\n\
-             HttpResponse::Ok().json(serde_json::json!({{ \"result\": \"...\" }}))\n\
-         }}\n\
-         // Then add `.service(your_endpoint)` in the `configure` fn at the bottom of utils.rs\n\
+         # How to Add Endpoints — TWO approaches\n\n\
+         ## Option A: Script Endpoints (PREFERRED — instant, no compilation)\n\
+         Use create_script_endpoint to write a bash script. It becomes live at /x/{{slug}} immediately.\n\
+         Steps: 1) create_script_endpoint with slug + bash script  2) test_script_endpoint to verify  3) Done!\n\
+         The script gets REQUEST_BODY, REQUEST_METHOD, QUERY_STRING as env vars. Output JSON to stdout.\n\
+         Example:\n\
+         ```bash\n\
+         #!/bin/bash\n\
+         echo '{{\"timestamp\": '$(date +%s)', \"iso\": \"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\"}}'\n\
          ```\n\n\
-         Available imports in utils.rs: actix_web, alloy (crypto/chain), serde, serde_json, NodeState.\n\
-         You CANNOT modify Cargo.toml, so only use dependencies already in the workspace.\n\n\
+         ## Option B: Rust Endpoints (for complex logic, requires compilation + deploy)\n\
+         Edit `crates/tempo-x402-node/src/routes/utils.rs` — add handler fn + .service() in configure.\n\
+         Must read the file first. End with commit step. Available: actix_web, alloy, serde_json.\n\
+         CANNOT modify: Cargo.toml, Dockerfile, railway.toml, soul crate, identity crate.\n\n\
+         PREFER script endpoints unless you specifically need Rust's type system or performance.\n\n\
          # Task\n\
          Create a step-by-step plan to achieve this goal. Each step is one of:\n\n\
          Mechanical (no LLM needed):\n\
@@ -231,7 +228,9 @@ pub fn planning_prompt(
          - {{\"type\": \"list_dir\", \"path\": \"...\", \"store_as\": \"key\"}}\n\
          - {{\"type\": \"run_shell\", \"command\": \"...\", \"store_as\": \"key\"}}\n\
          - {{\"type\": \"commit\", \"message\": \"...\"}}\n\
-         - {{\"type\": \"check_self\", \"endpoint\": \"health\", \"store_as\": \"key\"}}\n\n\
+         - {{\"type\": \"check_self\", \"endpoint\": \"health\", \"store_as\": \"key\"}}\n\
+         - {{\"type\": \"create_script_endpoint\", \"slug\": \"...\", \"script\": \"#!/bin/bash\\n...\", \"description\": \"...\"}}\n\
+         - {{\"type\": \"test_script_endpoint\", \"slug\": \"...\", \"input\": \"test data\", \"store_as\": \"key\"}}\n\n\
          LLM-assisted:\n\
          - {{\"type\": \"generate_code\", \"file_path\": \"...\", \"description\": \"...\", \"context_keys\": [\"key\"]}}\n\
          - {{\"type\": \"edit_code\", \"file_path\": \"...\", \"description\": \"...\", \"context_keys\": [\"key\"]}}\n\

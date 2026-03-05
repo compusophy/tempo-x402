@@ -37,8 +37,8 @@ pub struct ToolExecutor {
 /// Max output size per stream (stdout/stderr) to stay within LLM context limits.
 const MAX_OUTPUT_BYTES: usize = 4096;
 
-/// Max file size for read_file (16KB).
-const MAX_READ_BYTES: usize = 16384;
+/// Max file size for read_file (64KB — large enough for most source files).
+const MAX_READ_BYTES: usize = 65536;
 
 /// Max entries for list_directory.
 const MAX_DIR_ENTRIES: usize = 200;
@@ -296,6 +296,27 @@ impl ToolExecutor {
                     .ok_or_else(|| "missing 'description' argument".to_string())?;
                 let priority = args.get("priority").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
                 self.request_plan(description, priority).await
+            }
+            "create_script_endpoint" => {
+                let slug = args
+                    .get("slug")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'slug' argument".to_string())?;
+                let script = args
+                    .get("script")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'script' argument".to_string())?;
+                let description = args.get("description").and_then(|v| v.as_str());
+                self.create_script_endpoint(slug, script, description).await
+            }
+            "list_script_endpoints" => self.list_script_endpoints().await,
+            "test_script_endpoint" => {
+                let slug = args
+                    .get("slug")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'slug' argument".to_string())?;
+                let input = args.get("input").and_then(|v| v.as_str()).unwrap_or("");
+                self.test_script_endpoint(slug, input).await
             }
             _ => {
                 // Check meta-tools and dynamic tools via registry
@@ -765,6 +786,155 @@ impl ToolExecutor {
             exit_code: 0,
             duration_ms,
         })
+    }
+
+    /// Create a script endpoint — write a bash script that becomes an instant HTTP endpoint.
+    /// Scripts live at /data/endpoints/{slug}.sh and are served at GET/POST /x/{slug}.
+    async fn create_script_endpoint(
+        &self,
+        slug: &str,
+        script: &str,
+        description: Option<&str>,
+    ) -> Result<ToolResult, String> {
+        let start = std::time::Instant::now();
+
+        // Validate slug
+        if !slug
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err("slug must be alphanumeric with hyphens/underscores only".to_string());
+        }
+        if slug.len() > 64 {
+            return Err("slug too long (max 64 chars)".to_string());
+        }
+
+        let scripts_dir = PathBuf::from("/data/endpoints");
+        std::fs::create_dir_all(&scripts_dir)
+            .map_err(|e| format!("failed to create scripts directory: {e}"))?;
+
+        let script_path = scripts_dir.join(format!("{slug}.sh"));
+
+        // Prepend description as comment if provided
+        let full_script = if let Some(desc) = description {
+            format!("# {desc}\n{script}")
+        } else {
+            script.to_string()
+        };
+
+        std::fs::write(&script_path, &full_script)
+            .map_err(|e| format!("failed to write script: {e}"))?;
+
+        // Make executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+        }
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        Ok(ToolResult {
+            stdout: format!(
+                "Script endpoint created: /x/{slug}\n\
+                 Script: {}\n\
+                 Size: {} bytes\n\
+                 Test it: curl https://{{your-domain}}/x/{slug}",
+                script_path.display(),
+                full_script.len()
+            ),
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms,
+        })
+    }
+
+    /// List all script endpoints in /data/endpoints/.
+    async fn list_script_endpoints(&self) -> Result<ToolResult, String> {
+        let start = std::time::Instant::now();
+        let scripts_dir = PathBuf::from("/data/endpoints");
+
+        if !scripts_dir.exists() {
+            return Ok(ToolResult {
+                stdout: "no script endpoints found (directory doesn't exist yet)".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                duration_ms: 0,
+            });
+        }
+
+        let mut entries = Vec::new();
+        if let Ok(dir) = std::fs::read_dir(&scripts_dir) {
+            for entry in dir.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "sh") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        let desc = std::fs::read_to_string(&path)
+                            .ok()
+                            .and_then(|c| c.lines().next().and_then(|l| l.strip_prefix("# ").map(String::from)));
+                        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        entries.push(format!(
+                            "/x/{stem} — {} ({size} bytes)",
+                            desc.unwrap_or_else(|| "no description".to_string())
+                        ));
+                    }
+                }
+            }
+        }
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        Ok(ToolResult {
+            stdout: if entries.is_empty() {
+                "no script endpoints found".to_string()
+            } else {
+                format!("{} script endpoints:\n{}", entries.len(), entries.join("\n"))
+            },
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms,
+        })
+    }
+
+    /// Test a script endpoint locally by running it with test input.
+    async fn test_script_endpoint(&self, slug: &str, input: &str) -> Result<ToolResult, String> {
+        let start = std::time::Instant::now();
+        let script_path = PathBuf::from(format!("/data/endpoints/{slug}.sh"));
+
+        if !script_path.exists() {
+            return Err(format!("script endpoint '{slug}' not found"));
+        }
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::process::Command::new("bash")
+                .arg(script_path.to_str().unwrap_or_default())
+                .env("REQUEST_METHOD", "POST")
+                .env("REQUEST_BODY", input)
+                .env("QUERY_STRING", "")
+                .env("REQUEST_HEADERS", "{}")
+                .env("ENDPOINT_SLUG", slug)
+                .output(),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let duration_ms = start.elapsed().as_millis() as u64;
+                Ok(ToolResult {
+                    stdout: if output.status.success() {
+                        format!("test passed (exit 0):\n{stdout}")
+                    } else {
+                        format!("test failed (exit {}):\nstdout: {stdout}\nstderr: {stderr}", output.status.code().unwrap_or(-1))
+                    },
+                    stderr,
+                    exit_code: output.status.code().unwrap_or(1),
+                    duration_ms,
+                })
+            }
+            Ok(Err(e)) => Err(format!("failed to run script: {e}")),
+            Err(_) => Err("script timed out (10s limit for tests)".to_string()),
+        }
     }
 
     /// Register an endpoint on the gateway via x402 payment.
@@ -1600,6 +1770,58 @@ pub fn available_tools_with_git(coding_enabled: bool) -> Vec<FunctionDeclaration
                     }
                 },
                 "required": ["title"]
+            }),
+        });
+
+        // Script endpoint tools — create HTTP endpoints without Rust compilation
+        tools.push(FunctionDeclaration {
+            name: "create_script_endpoint".to_string(),
+            description: "Create an instant HTTP endpoint by writing a bash script. The script becomes available at GET/POST /x/{slug} immediately — no compilation or restart needed. The script receives REQUEST_METHOD, REQUEST_BODY, QUERY_STRING, REQUEST_HEADERS as env vars. Output JSON to stdout for JSON responses, or plain text.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "URL slug for the endpoint (alphanumeric + hyphens, e.g. 'base64', 'hash-keccak')"
+                    },
+                    "script": {
+                        "type": "string",
+                        "description": "Bash script content. Use REQUEST_BODY for input, output JSON to stdout. Example: echo '{\"result\": \"'$(echo $REQUEST_BODY | base64)'\"}'"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Short description of what the endpoint does"
+                    }
+                },
+                "required": ["slug", "script"]
+            }),
+        });
+
+        tools.push(FunctionDeclaration {
+            name: "list_script_endpoints".to_string(),
+            description: "List all script endpoints you've created. Shows slug, description, and size.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        });
+
+        tools.push(FunctionDeclaration {
+            name: "test_script_endpoint".to_string(),
+            description: "Test a script endpoint locally before advertising it. Runs the script with test input and returns the output.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "The endpoint slug to test"
+                    },
+                    "input": {
+                        "type": "string",
+                        "description": "Test input (passed as REQUEST_BODY env var)"
+                    }
+                },
+                "required": ["slug"]
             }),
         });
     }

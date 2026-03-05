@@ -87,6 +87,23 @@ pub enum PlanStep {
         #[serde(default)]
         store_as: Option<String>,
     },
+    /// Create a script endpoint — instant HTTP handler, no compilation.
+    CreateScriptEndpoint {
+        slug: String,
+        script: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        store_as: Option<String>,
+    },
+    /// Test a script endpoint.
+    TestScriptEndpoint {
+        slug: String,
+        #[serde(default)]
+        input: Option<String>,
+        #[serde(default)]
+        store_as: Option<String>,
+    },
     /// LLM generates code and writes to a file.
     GenerateCode {
         file_path: String,
@@ -134,6 +151,8 @@ impl PlanStep {
             }
             PlanStep::Commit { message } => format!("commit: {message}"),
             PlanStep::CheckSelf { endpoint, .. } => format!("check /{endpoint}"),
+            PlanStep::CreateScriptEndpoint { slug, .. } => format!("create /x/{slug}"),
+            PlanStep::TestScriptEndpoint { slug, .. } => format!("test /x/{slug}"),
             PlanStep::GenerateCode {
                 file_path,
                 description,
@@ -164,6 +183,8 @@ impl PlanStep {
             | PlanStep::ListDir { store_as, .. }
             | PlanStep::RunShell { store_as, .. }
             | PlanStep::CheckSelf { store_as, .. }
+            | PlanStep::CreateScriptEndpoint { store_as, .. }
+            | PlanStep::TestScriptEndpoint { store_as, .. }
             | PlanStep::Think { store_as, .. } => store_as.as_deref(),
             PlanStep::Commit { .. } | PlanStep::GenerateCode { .. } | PlanStep::EditCode { .. } => {
                 None
@@ -257,6 +278,25 @@ impl<'a> PlanExecutor<'a> {
             PlanStep::CheckSelf { endpoint, .. } => {
                 self.execute_tool("check_self", &serde_json::json!({ "endpoint": endpoint }))
                     .await
+            }
+            PlanStep::CreateScriptEndpoint {
+                slug,
+                script,
+                description,
+                ..
+            } => {
+                let mut args = serde_json::json!({ "slug": slug, "script": script });
+                if let Some(desc) = description {
+                    args["description"] = serde_json::json!(desc);
+                }
+                self.execute_tool("create_script_endpoint", &args).await
+            }
+            PlanStep::TestScriptEndpoint { slug, input, .. } => {
+                let mut args = serde_json::json!({ "slug": slug });
+                if let Some(inp) = input {
+                    args["input"] = serde_json::json!(inp);
+                }
+                self.execute_tool("test_script_endpoint", &args).await
             }
             PlanStep::GenerateCode {
                 file_path,

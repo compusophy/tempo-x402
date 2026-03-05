@@ -172,6 +172,9 @@ impl ThinkingLoop {
             }
         }
 
+        // Reset stagnation counter on startup — redeploy is not stagnation
+        self.reset_commit_counter();
+
         tracing::info!(
             dormant = self.llm.is_none(),
             tools_enabled = self.config.tools_enabled,
@@ -792,18 +795,20 @@ impl ThinkingLoop {
             let now = chrono::Utc::now().timestamp();
             let seed_goals = [
                 (
-                    "Create a simple JSON utility endpoint in crates/tempo-x402-node/src/routes/utils.rs: \
-                     a POST /utils/base64 endpoint that accepts {\"input\": \"...\", \"action\": \"encode|decode\"} \
-                     and returns the base64 encoded/decoded result. Read utils.rs first to see the existing pattern, \
-                     then add the handler and update the configure function.",
-                    "POST /utils/base64 responds correctly, cargo check passes, commit lands",
+                    "Create a script endpoint using create_script_endpoint: \
+                     a 'timestamp' endpoint that returns the current UTC timestamp in multiple formats \
+                     (unix, iso8601, rfc2822). Script: use 'date' command. \
+                     Then test it with test_script_endpoint. \
+                     Script endpoints are instant — no compilation needed, just write bash.",
+                    "GET /x/timestamp returns JSON with timestamp formats, test_script_endpoint succeeds",
                     5u32,
                 ),
                 (
-                    "Read the codebase structure: list crates/tempo-x402-node/src/routes/, \
-                     read utils.rs and main.rs to understand the endpoint pattern, \
-                     then record what you learned in update_memory",
-                    "Memory file contains accurate codebase architecture notes",
+                    "Create a script endpoint using create_script_endpoint: \
+                     a 'base64' endpoint that base64 encodes/decodes the REQUEST_BODY. \
+                     Use the bash 'base64' command. Return JSON with the result. \
+                     Then test it with test_script_endpoint.",
+                    "POST /x/base64 encodes/decodes input, test_script_endpoint succeeds",
                     4u32,
                 ),
             ];
