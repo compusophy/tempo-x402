@@ -418,110 +418,192 @@ impl ThinkingLoop {
             }
         }
 
-        // ── Step 3: Execute next step ──
+        // ── Step 3: Execute steps ──
+        // Batch consecutive mechanical steps in a single cycle (no 30s gap between reads).
+        // Stop when: plan done, LLM step executed, or a step fails.
         if plan.current_step >= plan.steps.len() {
-            // Plan is done — reflect and complete
             return self.complete_plan(llm, &mut plan).await;
         }
 
-        let step = plan.steps[plan.current_step].clone();
-        let step_summary = step.summary();
-        let is_llm = step.needs_llm();
-        let is_code = matches!(
-            step,
-            PlanStep::GenerateCode { .. } | PlanStep::EditCode { .. } | PlanStep::Commit { .. }
-        );
-
-        tracing::info!(
-            plan_id = %plan.id,
-            step = plan.current_step,
-            total_steps = plan.steps.len(),
-            step_type = %step_summary,
-            "Executing plan step"
-        );
-
         let executor = PlanExecutor::new(&self.tool_executor, llm, &self.config, &self.db);
-        let result = executor.execute_step(&step, &plan.context).await;
+        let mut steps_executed = 0u32;
+        let mut last_step_summary = String::new();
+        let mut last_was_llm = false;
+        let mut entered_code = false;
+        const MAX_BATCH: u32 = 10; // cap mechanical batch to avoid runaway
 
-        // ── Step 4: Handle result ──
-        match result {
-            StepResult::Success(output) => {
-                // Store output in plan context if step has store_as
-                if let Some(key) = step.store_key() {
-                    // Truncate large outputs
-                    let truncated = if output.len() > 8000 {
-                        format!("{}...(truncated)", &output[..8000])
-                    } else {
-                        output.clone()
-                    };
-                    plan.context.insert(key.to_string(), truncated);
+        loop {
+            if plan.current_step >= plan.steps.len() {
+                // All steps done — reflect and complete
+                if steps_executed > 0 {
+                    // Record batch progress before completing
+                    self.record_step_progress(&plan, &format!("{steps_executed} steps batched"));
                 }
-                plan.current_step += 1;
-                self.db.update_plan(&plan)?;
+                return self.complete_plan(llm, &mut plan).await;
+            }
 
-                // Reset stagnation counter on successful commit
-                if matches!(step, PlanStep::Commit { .. }) {
-                    self.reset_commit_counter();
+            let step = plan.steps[plan.current_step].clone();
+            let step_summary = step.summary();
+            let is_llm = step.needs_llm();
+            let is_code = matches!(
+                step,
+                PlanStep::GenerateCode { .. }
+                    | PlanStep::EditCode { .. }
+                    | PlanStep::Commit { .. }
+                    | PlanStep::CargoCheck { .. }
+            );
+
+            // If we already ran an LLM step, stop — don't batch LLM steps
+            if last_was_llm {
+                break;
+            }
+            // If we've batched enough mechanical steps, stop
+            if steps_executed >= MAX_BATCH && !is_llm {
+                break;
+            }
+
+            tracing::info!(
+                plan_id = %plan.id,
+                step = plan.current_step,
+                total_steps = plan.steps.len(),
+                step_type = %step_summary,
+                batch_pos = steps_executed,
+                "Executing plan step"
+            );
+
+            let result = executor.execute_step(&step, &plan.context).await;
+
+            // ── Handle result ──
+            match result {
+                StepResult::Success(output) => {
+                    if let Some(key) = step.store_key() {
+                        let truncated = if output.len() > 8000 {
+                            format!("{}...(truncated)", &output[..8000])
+                        } else {
+                            output.clone()
+                        };
+                        plan.context.insert(key.to_string(), truncated);
+                    }
+                    plan.current_step += 1;
+                    self.db.update_plan(&plan)?;
+
+                    if matches!(step, PlanStep::Commit { .. }) {
+                        self.reset_commit_counter();
+                    }
+
+                    tracing::info!(
+                        step = %step_summary,
+                        output_len = output.len(),
+                        "Step succeeded"
+                    );
+
+                    last_step_summary = step_summary;
+                    last_was_llm = is_llm;
+                    if is_code {
+                        entered_code = true;
+                    }
+                    steps_executed += 1;
+
+                    // After an LLM step, always stop (give it a pause)
+                    if is_llm {
+                        break;
+                    }
+                    // Mechanical step succeeded — continue to next step in same cycle
                 }
-
-                tracing::info!(
-                    step = %step_summary,
-                    output_len = output.len(),
-                    "Step succeeded"
-                );
-
-                // Record plan progress as a thought so it's visible in dashboard
-                let goal_desc = self
-                    .db
-                    .get_goal(&plan.goal_id)
-                    .ok()
-                    .flatten()
-                    .map(|g| g.description.clone());
-                let progress_content = format!(
-                    "[step {}/{}] {} — {}",
-                    plan.current_step,
-                    plan.steps.len(),
-                    goal_desc.as_deref().unwrap_or("plan"),
-                    step_summary,
-                );
-                let _ = self.db.insert_thought(&Thought {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    thought_type: ThoughtType::Reasoning,
-                    content: progress_content,
-                    context: None,
-                    created_at: chrono::Utc::now().timestamp(),
-                    salience: None,
-                    memory_tier: None,
-                    strength: None,
-                });
-
-                self.increment_cycle_count()?;
-                Ok(CycleResult {
-                    step_type: if is_llm {
-                        StepType::Llm
-                    } else {
-                        StepType::Mechanical
-                    },
-                    entered_code: is_code,
-                    summary: format!(
-                        "step {}/{}: {}",
-                        plan.current_step,
-                        plan.steps.len(),
-                        step_summary
-                    ),
-                })
-            }
-            StepResult::Failed(error) => {
-                tracing::warn!(step = %step_summary, error = %error, "Step failed");
-                self.handle_step_failure(llm, &mut plan, &step_summary, &error)
-                    .await
-            }
-            StepResult::NeedsReplan(reason) => {
-                tracing::info!(step = %step_summary, reason = %reason, "Step needs replan");
-                self.handle_step_failure(llm, &mut plan, &step_summary, &reason)
-                    .await
+                StepResult::Failed(error) => {
+                    tracing::warn!(step = %step_summary, error = %error, "Step failed");
+                    return self
+                        .handle_step_failure(llm, &mut plan, &step_summary, &error)
+                        .await;
+                }
+                StepResult::NeedsReplan(reason) => {
+                    tracing::info!(step = %step_summary, reason = %reason, "Step needs replan");
+                    return self
+                        .handle_step_failure(llm, &mut plan, &step_summary, &reason)
+                        .await;
+                }
             }
         }
+
+        // Record batch progress as a single thought
+        let goal_desc = self
+            .db
+            .get_goal(&plan.goal_id)
+            .ok()
+            .flatten()
+            .map(|g| g.description.clone());
+        let progress_content = if steps_executed > 1 {
+            format!(
+                "[steps ..{}/{}] {} — batched {} mechanical steps, last: {}",
+                plan.current_step,
+                plan.steps.len(),
+                goal_desc.as_deref().unwrap_or("plan"),
+                steps_executed,
+                last_step_summary,
+            )
+        } else {
+            format!(
+                "[step {}/{}] {} — {}",
+                plan.current_step,
+                plan.steps.len(),
+                goal_desc.as_deref().unwrap_or("plan"),
+                last_step_summary,
+            )
+        };
+        let _ = self.db.insert_thought(&Thought {
+            id: uuid::Uuid::new_v4().to_string(),
+            thought_type: ThoughtType::Reasoning,
+            content: progress_content,
+            context: None,
+            created_at: chrono::Utc::now().timestamp(),
+            salience: None,
+            memory_tier: None,
+            strength: None,
+        });
+
+        self.increment_cycle_count()?;
+        Ok(CycleResult {
+            step_type: if last_was_llm {
+                StepType::Llm
+            } else {
+                StepType::Mechanical
+            },
+            entered_code,
+            summary: format!(
+                "steps {}/{} ({} executed): {}",
+                plan.current_step,
+                plan.steps.len(),
+                steps_executed,
+                last_step_summary,
+            ),
+        })
+    }
+
+    /// Record step progress as a thought (for dashboard visibility).
+    fn record_step_progress(&self, plan: &Plan, summary: &str) {
+        let goal_desc = self
+            .db
+            .get_goal(&plan.goal_id)
+            .ok()
+            .flatten()
+            .map(|g| g.description.clone());
+        let content = format!(
+            "[step {}/{}] {} — {}",
+            plan.current_step,
+            plan.steps.len(),
+            goal_desc.as_deref().unwrap_or("plan"),
+            summary,
+        );
+        let _ = self.db.insert_thought(&Thought {
+            id: uuid::Uuid::new_v4().to_string(),
+            thought_type: ThoughtType::Reasoning,
+            content,
+            context: None,
+            created_at: chrono::Utc::now().timestamp(),
+            salience: None,
+            memory_tier: None,
+            strength: None,
+        });
     }
 
     /// Record observation and sync auto-beliefs.

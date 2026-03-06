@@ -115,7 +115,7 @@ pub async fn validated_commit(
 const MAX_ERROR_OUTPUT: usize = 4096;
 
 /// Run `cargo check --workspace`. Returns (passed, error_output).
-async fn run_cargo_check(workspace_root: &str) -> (bool, Option<String>) {
+pub async fn run_cargo_check(workspace_root: &str) -> (bool, Option<String>) {
     tracing::info!("running cargo check...");
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(300),

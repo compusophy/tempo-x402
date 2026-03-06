@@ -104,6 +104,11 @@ pub enum PlanStep {
         #[serde(default)]
         store_as: Option<String>,
     },
+    /// Run cargo check to verify compilation. Stores errors if any.
+    CargoCheck {
+        #[serde(default)]
+        store_as: Option<String>,
+    },
     /// LLM generates code and writes to a file.
     GenerateCode {
         file_path: String,
@@ -131,7 +136,9 @@ impl PlanStep {
     pub fn needs_llm(&self) -> bool {
         matches!(
             self,
-            PlanStep::GenerateCode { .. } | PlanStep::EditCode { .. } | PlanStep::Think { .. }
+            PlanStep::GenerateCode { .. }
+                | PlanStep::EditCode { .. }
+                | PlanStep::Think { .. }
         )
     }
 
@@ -153,6 +160,7 @@ impl PlanStep {
             PlanStep::CheckSelf { endpoint, .. } => format!("check /{endpoint}"),
             PlanStep::CreateScriptEndpoint { slug, .. } => format!("create /x/{slug}"),
             PlanStep::TestScriptEndpoint { slug, .. } => format!("test /x/{slug}"),
+            PlanStep::CargoCheck { .. } => "cargo check".to_string(),
             PlanStep::GenerateCode {
                 file_path,
                 description,
@@ -185,6 +193,7 @@ impl PlanStep {
             | PlanStep::CheckSelf { store_as, .. }
             | PlanStep::CreateScriptEndpoint { store_as, .. }
             | PlanStep::TestScriptEndpoint { store_as, .. }
+            | PlanStep::CargoCheck { store_as, .. }
             | PlanStep::Think { store_as, .. } => store_as.as_deref(),
             PlanStep::Commit { .. } | PlanStep::GenerateCode { .. } | PlanStep::EditCode { .. } => {
                 None
@@ -298,6 +307,7 @@ impl<'a> PlanExecutor<'a> {
                 }
                 self.execute_tool("test_script_endpoint", &args).await
             }
+            PlanStep::CargoCheck { .. } => self.execute_cargo_check().await,
             PlanStep::GenerateCode {
                 file_path,
                 description,
@@ -336,7 +346,21 @@ impl<'a> PlanExecutor<'a> {
         }
     }
 
+    /// Execute a standalone cargo check step.
+    async fn execute_cargo_check(&self) -> StepResult {
+        let ws = self.config.workspace_root.clone();
+        let (passed, errors) = crate::coding::run_cargo_check(&ws).await;
+        if passed {
+            StepResult::Success("cargo check passed".to_string())
+        } else {
+            let err_msg = errors.unwrap_or_else(|| "unknown error".to_string());
+            StepResult::Failed(format!("cargo check failed:\n{err_msg}"))
+        }
+    }
+
     /// Execute a code generation/edit step via LLM with focused prompt.
+    /// Includes a compile-fix loop: after the LLM writes code, runs cargo check
+    /// and feeds errors back for up to 3 fix attempts.
     async fn execute_code_step(
         &self,
         file_path: &str,
@@ -386,45 +410,134 @@ impl<'a> PlanExecutor<'a> {
         );
 
         let system_prompt = crate::prompts::system_prompt_for_mode(AgentMode::Code, self.config);
-
-        // Build code-mode tools (write_file + edit_file only for focused generation)
         let code_tools = self.code_tools();
+        let use_deep = self.config.direct_push && self.config.autonomous_coding;
 
         let mut conversation = vec![ConversationMessage {
             role: "user".to_string(),
             parts: vec![ConversationPart::Text(prompt)],
         }];
 
-        let use_deep = self.config.direct_push && self.config.autonomous_coding;
-        match crate::thinking::run_tool_loop_with_model(
+        // ── Initial code generation ──
+        let initial_result = match crate::thinking::run_tool_loop_with_model(
             self.llm,
             &system_prompt,
             &mut conversation,
             &code_tools,
             self.tool_executor,
             self.db,
-            10, // focused budget
+            20, // generous budget: read + search + edit + check + fix
             use_deep,
         )
         .await
         {
             Ok(result) => {
                 if result.tool_executions.is_empty() {
-                    // LLM didn't use any tools — it may have produced text instead
-                    StepResult::NeedsReplan(format!(
+                    return StepResult::NeedsReplan(format!(
                         "LLM did not write any files. Response: {}",
                         &result.text[..result.text.len().min(200)]
-                    ))
+                    ));
+                }
+                result
+            }
+            Err(e) => return StepResult::Failed(format!("LLM code step failed: {e}")),
+        };
+
+        // ── Compile-fix loop: cargo check → fix errors → repeat (up to 3 times) ──
+        let ws = self.config.workspace_root.clone();
+        let max_fix_attempts = 3;
+
+        for attempt in 0..max_fix_attempts {
+            let (passed, errors) = crate::coding::run_cargo_check(&ws).await;
+            if passed {
+                let suffix = if attempt > 0 {
+                    format!(" (fixed after {attempt} cargo check iteration(s))")
                 } else {
-                    StepResult::Success(format!(
-                        "Code step completed ({} tool calls): {}",
-                        result.tool_executions.len(),
-                        result.text.chars().take(200).collect::<String>()
-                    ))
+                    String::new()
+                };
+                return StepResult::Success(format!(
+                    "Code step completed ({} tool calls){suffix}: {}",
+                    initial_result.tool_executions.len(),
+                    initial_result.text.chars().take(200).collect::<String>()
+                ));
+            }
+
+            let err_msg = errors.unwrap_or_else(|| "unknown error".to_string());
+            tracing::warn!(
+                attempt = attempt + 1,
+                file_path,
+                "cargo check failed after code generation — attempting fix"
+            );
+
+            // Re-read the file so the LLM sees what it actually wrote
+            let current_file = match self
+                .tool_executor
+                .execute("read_file", &serde_json::json!({ "path": file_path }))
+                .await
+            {
+                Ok(r) => r.stdout,
+                Err(_) => String::new(),
+            };
+
+            // Build a fix prompt with the cargo errors
+            let fix_prompt = format!(
+                "# Compilation Error (attempt {}/{})\n\n\
+                 The code you just wrote does NOT compile. Fix the errors below.\n\n\
+                 ## cargo check errors\n```\n{}\n```\n\n\
+                 ## Current content of {}\n```rust\n{}\n```\n\n\
+                 Use edit_file to fix ONLY the compilation errors. Do not rewrite the entire file.\n\
+                 Focus on: missing imports, wrong types, incorrect function signatures, syntax errors.",
+                attempt + 1,
+                max_fix_attempts,
+                &err_msg[..err_msg.len().min(3000)],
+                file_path,
+                &current_file[..current_file.len().min(4000)],
+            );
+
+            conversation.push(ConversationMessage {
+                role: "user".to_string(),
+                parts: vec![ConversationPart::Text(fix_prompt)],
+            });
+
+            // Give LLM a chance to fix
+            match crate::thinking::run_tool_loop_with_model(
+                self.llm,
+                &system_prompt,
+                &mut conversation,
+                &code_tools,
+                self.tool_executor,
+                self.db,
+                8, // smaller budget for fixes
+                use_deep,
+            )
+            .await
+            {
+                Ok(_) => {
+                    // Loop back to check again
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Fix attempt LLM call failed");
+                    // Continue to next attempt or fall through to failure
                 }
             }
-            Err(e) => StepResult::Failed(format!("LLM code step failed: {e}")),
         }
+
+        // Final check after all fix attempts
+        let (passed, errors) = crate::coding::run_cargo_check(&ws).await;
+        if passed {
+            return StepResult::Success(format!(
+                "Code step completed (fixed after {} attempts): {}",
+                max_fix_attempts,
+                initial_result.text.chars().take(200).collect::<String>()
+            ));
+        }
+
+        let err_msg = errors.unwrap_or_else(|| "unknown error".to_string());
+        StepResult::Failed(format!(
+            "Code does not compile after {} fix attempts. Last errors:\n{}",
+            max_fix_attempts,
+            &err_msg[..err_msg.len().min(2000)]
+        ))
     }
 
     /// Execute a Think step — ask LLM a focused question.
@@ -465,6 +578,8 @@ impl<'a> PlanExecutor<'a> {
     }
 
     /// Get the focused code-mode tool declarations.
+    /// Includes file ops + shell (for cargo check, grep, etc.) — the LLM
+    /// needs the same tools a human developer would use.
     fn code_tools(&self) -> Vec<FunctionDeclaration> {
         let all = tools::available_tools_with_git(self.config.coding_enabled);
         all.into_iter()
@@ -476,6 +591,7 @@ impl<'a> PlanExecutor<'a> {
                         | "edit_file"
                         | "list_directory"
                         | "search_files"
+                        | "execute_shell"
                         | "commit_changes"
                 )
             })

@@ -230,15 +230,18 @@ pub fn planning_prompt(
          - {{\"type\": \"commit\", \"message\": \"...\"}}\n\
          - {{\"type\": \"check_self\", \"endpoint\": \"health\", \"store_as\": \"key\"}}\n\
          - {{\"type\": \"create_script_endpoint\", \"slug\": \"...\", \"script\": \"#!/bin/bash\\n...\", \"description\": \"...\"}}\n\
-         - {{\"type\": \"test_script_endpoint\", \"slug\": \"...\", \"input\": \"test data\", \"store_as\": \"key\"}}\n\n\
+         - {{\"type\": \"test_script_endpoint\", \"slug\": \"...\", \"input\": \"test data\", \"store_as\": \"key\"}}\n\
+         - {{\"type\": \"cargo_check\", \"store_as\": \"check_result\"}}\n\n\
          LLM-assisted:\n\
          - {{\"type\": \"generate_code\", \"file_path\": \"...\", \"description\": \"...\", \"context_keys\": [\"key\"]}}\n\
          - {{\"type\": \"edit_code\", \"file_path\": \"...\", \"description\": \"...\", \"context_keys\": [\"key\"]}}\n\
          - {{\"type\": \"think\", \"question\": \"...\", \"store_as\": \"key\"}}\n\n\
          Rules:\n\
          - ALWAYS read files BEFORE editing them (use store_as to pass content to edit steps)\n\
+         - For Rust code changes: put a cargo_check step AFTER each edit_code/generate_code step and BEFORE the commit step\n\
+         - edit_code/generate_code steps have a built-in compile-fix loop (3 retries) but cargo_check stores errors explicitly\n\
          - End with a commit step\n\
-         - Max 20 steps, prefer fewer — a simple endpoint needs ~5 steps (read, read, edit, commit)\n\
+         - Max 20 steps, prefer fewer — a simple endpoint needs ~5 steps (read, edit, cargo_check, commit)\n\
          - Prefer edit_code over generate_code for existing files\n\
          - Protected files (soul core, identity, Cargo.toml, Cargo.lock) cannot be modified\n\
          - Do NOT try to modify Dockerfile, railway.toml, or deployment configs — focus on Rust code\n\
@@ -274,13 +277,35 @@ pub fn code_generation_prompt(
          # Task\n\
          {description}\n\
          {context}\n\n\
+         # Available Dependencies (already in Cargo.toml — do NOT add new ones)\n\
+         - actix-web (web framework): HttpRequest, HttpResponse, web::{{Data, Json, Path, Query, ServiceConfig}}\n\
+         - serde / serde_json: Serialize, Deserialize, serde_json::{{json, Value}}\n\
+         - tokio: async runtime, tokio::process::Command, tokio::time\n\
+         - alloy: Ethereum types (Address, U256, FixedBytes), providers, signers\n\
+         - reqwest: HTTP client\n\
+         - tracing: tracing::info!, tracing::warn!, tracing::error!\n\
+         - chrono: Utc, DateTime, NaiveDateTime\n\
+         - uuid: Uuid::new_v4()\n\
+         - sha2 / hmac: for hashing\n\
+         - hex: hex::encode, hex::decode\n\
+         - rusqlite: SQLite (used via SoulDatabase wrapper)\n\n\
+         # Rust Patterns for This Codebase\n\
+         - Error handling: use `Result<T, String>` or `Result<T, actix_web::Error>` for handlers\n\
+         - Actix handlers return `impl Responder` or `Result<HttpResponse, actix_web::Error>`\n\
+         - Route registration: `cfg.service(web::resource(\"/path\").route(web::get().to(handler)))`\n\
+         - JSON responses: `HttpResponse::Ok().json(serde_json::json!({{...}}))`\n\
+         - Shared state: `web::Data<AppState>` passed to handlers\n\
+         - String → &str: use `.as_str()` or `&*string_var`\n\
+         - async fn handler(req: HttpRequest) -> impl Responder {{ ... }}\n\n\
          Rules:\n\
          - Use edit_file for existing files (provide unique old_string and new_string)\n\
          - Use write_file only for brand new files\n\
          - Keep changes minimal and focused — add your code at the right location\n\
          - For actix-web endpoints: add the handler function AND update the configure fn\n\
          - Ensure all imports are at the top of the file\n\
-         - Do NOT rewrite the entire file — only add/change what's needed"
+         - Do NOT rewrite the entire file — only add/change what's needed\n\
+         - If unsure about an import path, use search_files or read_file to check\n\
+         - After editing, you can run `execute_shell` with `cargo check --workspace` to verify"
     )
 }
 
