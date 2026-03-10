@@ -11,6 +11,7 @@ This document maps the `crates` directory structure and identifies non-protected
 ## Accessible Source Files
 
 ### **tempo-x402-node**
+Main node implementation, manages soul state and execution.
 *   `crates/tempo-x402-node/build.rs`
 *   `crates/tempo-x402-node/src/main.rs`
 *   `crates/tempo-x402-node/src/soul_observer.rs`
@@ -26,6 +27,7 @@ This document maps the `crates` directory structure and identifies non-protected
 *   `crates/tempo-x402-node/src/routes/wallet.rs`
 
 ### **tempo-x402-gateway**
+API gateway and facilitator implementation.
 *   `crates/tempo-x402-gateway/build.rs`
 *   `crates/tempo-x402-gateway/src/main.rs`
 *   `crates/tempo-x402-gateway/src/lib.rs`
@@ -53,6 +55,7 @@ This document maps the `crates` directory structure and identifies non-protected
 *   `crates/tempo-x402-gateway/src/facilitator/state.rs`
 
 ### **tempo-x402-soul**
+The "thinking" engine of the agent.
 *   `crates/tempo-x402-soul/src/lib.rs`
 *   `crates/tempo-x402-soul/src/observer.rs`
 *   `crates/tempo-x402-soul/src/git.rs`
@@ -76,6 +79,7 @@ This document maps the `crates` directory structure and identifies non-protected
 *   `crates/tempo-x402-soul/src/plan.rs`
 
 ### **tempo-x402 (Core Protocol Library)**
+Core types and logic for the x402 protocol.
 *   `crates/tempo-x402/src/lib.rs`
 *   `crates/tempo-x402/src/hmac.rs`
 *   `crates/tempo-x402/src/response.rs`
@@ -95,14 +99,16 @@ This document maps the `crates` directory structure and identifies non-protected
 *   `crates/tempo-x402/src/wallet.rs`
 *   `crates/tempo-x402/src/bin/x402-client.rs`
 *   `crates/tempo-x402/src/client/mod.rs`
-*   `crates/tempo-x402/src/client/http_client.rs`
-*   `crates/tempo-x402/src/client/scheme_client.rs`
 
 ### **tempo-x402-app**
-*   `crates/tempo-x402-app/src/api.rs`
+Frontend web application.
 *   `crates/tempo-x402-app/src/lib.rs`
+*   `crates/tempo-x402-app/src/api.rs`
 *   `crates/tempo-x402-app/src/wallet.rs`
 *   `crates/tempo-x402-app/src/wallet_crypto.rs`
+*   `crates/tempo-x402-app/index.html`
+*   `crates/tempo-x402-app/style.css`
 
 ### **tempo-x402-security-audit**
+Security audit tools and tests.
 *   `crates/tempo-x402-security-audit/src/lib.rs`
