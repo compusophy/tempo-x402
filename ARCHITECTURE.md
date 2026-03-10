@@ -17,6 +17,8 @@ The project is organized as a Rust workspace with several key crates:
 - **`tempo-x402-gateway`**: Handles the x402 payment protocol, acting as a gateway/facilitator for monetized endpoints.
 - **`tempo-x402-identity`**: Manages cryptographic identity, on-chain registration, and peer discovery.
 - **`tempo-x402`**: The core library for the x402 protocol (EIP-712 signing, verification, and settlement).
+- **`tempo-x402-app`**: A Leptos-based WASM single-page application (SPA) that provides a user interface for the node.
+- **`tempo-x402-security-audit`**: A test-only crate for verifying security invariants and protecting against common vulnerabilities.
 
 ## Core Components
 
