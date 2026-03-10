@@ -136,3 +136,65 @@ These are already present in the workspace and should be used instead of adding 
 - **JSON responses**: `HttpResponse::Ok().json(serde_json::json!({...}))`.
 - **Shared state**: Passed via `web::Data<AppState>`.
 - **Route registration**: Done in `configure` functions: `cfg.service(web::resource("/path").route(web::get().to(handler)))`.
+po-x402-soul/src/fitness.rs`
+
+### **tempo-x402 (Core Protocol Library)**
+Implementation of the x402 payment protocol, Tip20 tokens, and general utilities.
+*   `crates/tempo-x402/src/lib.rs`
+*   `crates/tempo-x402/src/hmac.rs`
+*   `crates/tempo-x402/src/response.rs`
+*   `crates/tempo-x402/src/scheme.rs`
+*   `crates/tempo-x402/src/scheme_server.rs`
+*   `crates/tempo-x402/src/security.rs`
+*   `crates/tempo-x402/src/eip712.rs`
+*   `crates/tempo-x402/src/constants.rs`
+*   `crates/tempo-x402/src/approve.rs`
+*   `crates/tempo-x402/src/nonce_store.rs`
+*   `crates/tempo-x402/src/facilitator_client.rs`
+*   `crates/tempo-x402/src/tip20.rs`
+*   `crates/tempo-x402/src/payment.rs`
+*   `crates/tempo-x402/src/scheme_facilitator.rs`
+*   `crates/tempo-x402/src/network.rs`
+*   `crates/tempo-x402/src/error.rs`
+*   `crates/tempo-x402/src/wallet.rs`
+*   `crates/tempo-x402/src/bin/x402-client.rs`
+*   `crates/tempo-x402/src/client/mod.rs`
+*   `crates/tempo-x402/src/client/http_client.rs`
+*   `crates/tempo-x402/src/client/scheme_client.rs`
+
+### **tempo-x402-security-audit**
+Security auditing utilities.
+*   `crates/tempo-x402-security-audit/src/lib.rs`
+
+### **tempo-x402-app**
+Frontend application (Leptos/Trunk based).
+*   `crates/tempo-x402-app/src/` (various frontend components)
+
+## 🚫 Protected Files (Do Not Modify)
+
+*   `Cargo.toml` / `Cargo.lock` (Workspace and crate levels)
+*   `crates/tempo-x402-identity/` (Identity-related files)
+*   Any file specifically marked as protected in the mission brief or system instructions.
+
+## 🛠 Available Dependencies (Workspace)
+
+These are already present in the workspace and should be used instead of adding new ones:
+- `actix-web`: Web framework (HttpRequest, HttpResponse, web::Data, etc.)
+- `serde` / `serde_json`: Serialization/Deserialization
+- `tokio`: Async runtime and process management
+- `alloy`: Ethereum types (Address, U256, FixedBytes) and signing
+- `reqwest`: HTTP client
+- `tracing`: Logging/instrumentation
+- `chrono`: DateTime utilities
+- `uuid`: UUID generation
+- `sha2` / `hmac`: Hashing and message authentication
+- `hex`: Hexadecimal encoding/decoding
+- `rusqlite`: SQLite database
+
+## 🏗 Rust Patterns for This Codebase
+
+- **Error handling**: Prefer `Result<T, String>` for general logic or `Result<HttpResponse, actix_web::Error>` for web handlers.
+- **Actix handlers**: Return `impl Responder` or `Result<HttpResponse, actix_web::Error>`.
+- **JSON responses**: `HttpResponse::Ok().json(serde_json::json!({...}))`.
+- **Shared state**: Passed via `web::Data<AppState>`.
+- **Route registration**: Done in `configure` functions: `cfg.service(web::resource("/path").route(web::get().to(handler)))`.
