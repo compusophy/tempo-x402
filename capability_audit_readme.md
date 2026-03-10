@@ -77,7 +77,7 @@ The following dependencies are available in the workspace (defined in `Cargo.tom
 - **uuid**: UUID generation
 - **sha2 / hmac**: cryptographic hashing
 - **hex**: hex encoding/decoding
-- **rusqlite**: SQLite database access
+- **rusqlite**: SQLite database access (used via SoulDatabase wrapper)
 
 ## Rust Patterns for This Codebase
 
