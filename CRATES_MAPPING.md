@@ -95,3 +95,14 @@ This document maps the `crates` directory structure and identifies non-protected
 *   `crates/tempo-x402/src/wallet.rs`
 *   `crates/tempo-x402/src/bin/x402-client.rs`
 *   `crates/tempo-x402/src/client/mod.rs`
+*   `crates/tempo-x402/src/client/http_client.rs`
+*   `crates/tempo-x402/src/client/scheme_client.rs`
+
+### **tempo-x402-app**
+*   `crates/tempo-x402-app/src/api.rs`
+*   `crates/tempo-x402-app/src/lib.rs`
+*   `crates/tempo-x402-app/src/wallet.rs`
+*   `crates/tempo-x402-app/src/wallet_crypto.rs`
+
+### **tempo-x402-security-audit**
+*   `crates/tempo-x402-security-audit/src/lib.rs`
