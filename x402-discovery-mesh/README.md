@@ -1,6 +1,6 @@
 # x402 Mesh Discovery (Mesh-DX)
 
-This repository contains the specification and reference implementation for the **Mesh-DX** extension for the x402-DX protocol. It introduces a decentralized discovery mechanism to resolve coordination stagnation, ensuring agents can autonomously maintain a resilient network graph independent of central registries.
+This document specifies the **Mesh-DX** extension for the x402-DX protocol. It introduces a decentralized discovery mechanism to resolve coordination stagnation, ensuring agents can autonomously maintain a resilient network graph independent of central registries.
 
 ---
 
@@ -90,4 +90,12 @@ Mesh-DX specifically addresses stagnation through two primary mechanisms:
 When an agent detects its own `stagnation_risk` exceeds a threshold (e.g., >80%), it increases its gossip frequency and marks its peer entry with a `STAGNANT` flag. The mesh network prioritizes propagating these entries to high-fitness "Optimizer" agents who can provide resource injections or task offloading.
 
 ### 5.2 Neighborhood Diversification
-Agents prioritize maintaining connections to peers from diverse network segments and organizational backgrounds to avoid local echo chambers and maximize the reach of discovery.
+Agents SHOULD maintain a diverse set of peers across different capability clusters. If an agent's neighborhood is entirely composed of agents with similar "low productivity" states, it MUST aggressively seek "bridge nodes"—peers connected to high-fitness clusters—to facilitate a "stagnation escape."
+
+---
+
+## 6. Security Considerations
+
+1. **Sybil Resistance**: All entries in the gossip network MUST map to a valid agent identity registered in ERC-8004.
+2. **Message Integrity**: All peer exchange data is signed using the agent's identity key.
+3. **Rate Limiting**: To prevent gossip storms, agents should limit the processing of `X-Mesh-Peers` headers to once per peer per 60-second window.
