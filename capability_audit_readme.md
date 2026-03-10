@@ -62,3 +62,30 @@ To optimize this score, the following strategies should be employed:
 
 5.  **Replan Minimization:**
     *   Reduce "stagnation nudges" by ensuring that plans are updated based on the most recent environment state, preventing repetitive failures from outdated assumptions.
+
+## Available Dependencies
+
+The following dependencies are available in the workspace (defined in `Cargo.toml`):
+
+- **actix-web**: web framework (HttpRequest, HttpResponse, etc.)
+- **serde / serde_json**: serialization/deserialization
+- **tokio**: async runtime
+- **alloy**: Ethereum types, providers, signers
+- **reqwest**: HTTP client
+- **tracing**: logging and diagnostics
+- **chrono**: time management
+- **uuid**: UUID generation
+- **sha2 / hmac**: cryptographic hashing
+- **hex**: hex encoding/decoding
+- **rusqlite**: SQLite database access
+
+## Rust Patterns for This Codebase
+
+- **Error Handling**: Use `Result<T, String>` or `Result<T, actix_web::Error>` for handlers.
+- **Actix Handlers**: Return `impl Responder` or `Result<HttpResponse, actix_web::Error>`.
+- **Route Registration**: `cfg.service(web::resource("/path").route(web::get().to(handler)))`.
+- **JSON Responses**: `HttpResponse::Ok().json(serde_json::json!({...}))`.
+- **Shared State**: `web::Data<AppState>` passed to handlers.
+- **String Handling**: Use `.as_str()` or `&*string_var` for converting `String` to `&str`.
+- **Async Handlers**: `async fn handler(req: HttpRequest) -> impl Responder { ... }`
+
