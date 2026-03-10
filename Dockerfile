@@ -16,7 +16,7 @@ RUN curl -sSL --retry 5 --retry-delay 5 \
     -o /tmp/wb.tar.gz && \
     mkdir -p /root/.trunk/tools/wasm-bindgen-${WASM_BINDGEN_VERSION} && \
     tar xzf /tmp/wb.tar.gz --strip-components=1 \
-        -C /root/.trunk/tools/wasm-bindgen-${WASM_BINDGEN_VERSION}/ && \
+    -C /root/.trunk/tools/wasm-bindgen-${WASM_BINDGEN_VERSION}/ && \
     rm /tmp/wb.tar.gz
 
 WORKDIR /app
@@ -29,7 +29,7 @@ RUN cd crates/tempo-x402-app && trunk build --release
 RUN cargo build --release --package tempo-x402-gateway --package tempo-x402-node
 
 # Stage 2: Runtime
-FROM debian:bookworm-slim
+FROM rust:1.89-bookworm
 
 RUN apt-get update && apt-get install -y \
     ca-certificates gosu git curl \
@@ -66,9 +66,5 @@ EXPOSE 4023
 # Health check: verify the gateway is responsive
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -q -O /dev/null http://localhost:4023/health || exit 1
-
-# Note: For production deployments, consider using --read-only with Docker's
-# read-only root filesystem flag and mounting /data as the only writable volume:
-#   docker run --read-only --tmpfs /tmp -v gateway-data:/data x402-gateway
 
 ENTRYPOINT ["/entrypoint.sh"]
