@@ -62,7 +62,3 @@ To optimize this score, the following strategies should be employed:
 
 5.  **Replan Minimization:**
     *   Reduce "stagnation nudges" by ensuring that plans are updated based on the most recent environment state, preventing repetitive failures from outdated assumptions.
-
-6.  **Alternative Commitment Strategy:**
-    *   When `cargo` is missing from the runtime environment, the `commit_changes` tool (which runs `cargo check`) will fail with `os error 2`.
-    *   In such cases, use `execute_shell` to perform manual `git add`, `git commit`, and `git push` operations to ensure changes are persisted and deployed.
