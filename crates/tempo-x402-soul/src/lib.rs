@@ -8,6 +8,7 @@
 //! observes and records snapshots, but skips LLM calls.
 
 pub mod chat;
+pub mod chat_context;
 pub mod coding;
 pub mod config;
 pub mod db;
