@@ -22,12 +22,18 @@ pub struct FitnessScore {
     /// Economic fitness: are your endpoints earning payments?
     /// (payments / max(endpoints, 1)), scaled by revenue growth.
     pub economic: f64,
+    /// Economic trend.
+    pub economic_trend: f64,
     /// Execution fitness: do your plans succeed?
     /// (completed_plans / max(total_plans, 1)), penalized by replan rate.
     pub execution: f64,
+    /// Execution trend.
+    pub execution_trend: f64,
     /// Evolution fitness: are you actually changing your code?
     /// Commits per 100 cycles, scaled by cargo-check pass rate.
     pub evolution: f64,
+    /// Evolution trend.
+    pub evolution_trend: f64,
     /// Coordination fitness: can you work with peers?
     /// Successful peer calls / max(attempted, 1).
     pub coordination: f64,
@@ -70,14 +76,21 @@ impl FitnessScore {
             + W_COORDINATION * coordination
             + W_INTROSPECTION * introspection;
 
-        // Compute trend from historical scores
-        let trend = compute_trend(db, total);
+        // Compute trends from historical scores
+        let history = load_history(db);
+        let trend = compute_trend(&history, total, |s| s.total);
+        let economic_trend = compute_trend(&history, economic, |s| s.economic);
+        let execution_trend = compute_trend(&history, execution, |s| s.execution);
+        let evolution_trend = compute_trend(&history, evolution, |s| s.evolution);
 
         Self {
             total,
             economic,
+            economic_trend,
             execution,
+            execution_trend,
             evolution,
+            evolution_trend,
             coordination,
             introspection,
             trend,
@@ -244,8 +257,7 @@ fn compute_introspection(snapshot: &NodeSnapshot, db: &SoulDatabase) -> f64 {
 
 /// Compute trend (gradient) from historical fitness scores.
 /// Returns the slope of a simple linear regression over recent scores.
-fn compute_trend(db: &SoulDatabase, current_total: f64) -> f64 {
-    let history = load_history(db);
+fn compute_trend(history: &[FitnessScore], current_val: f64, selector: impl Fn(&FitnessScore) -> f64) -> f64 {
     if history.len() < 3 {
         return 0.0; // not enough data
     }
@@ -254,8 +266,8 @@ fn compute_trend(db: &SoulDatabase, current_total: f64) -> f64 {
     let n = history.len().min(10);
     let recent: Vec<f64> = history[history.len() - n..]
         .iter()
-        .map(|s| s.total)
-        .chain(std::iter::once(current_total))
+        .map(selector)
+        .chain(std::iter::once(current_val))
         .collect();
 
     // Simple linear regression: slope of fitness over time

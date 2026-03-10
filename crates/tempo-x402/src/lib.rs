@@ -1,4 +1,4 @@
-//! x402 payment protocol for the Tempo blockchain.
+//! x402 payment protocol for the Tempo blockchain (updated).
 //!
 //! Implements [HTTP 402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/402)
 //! pay-per-request using EIP-712 signed authorizations and TIP-20 (ERC-20 compatible) token

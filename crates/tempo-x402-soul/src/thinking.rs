@@ -1,4 +1,4 @@
-//! Plan-driven thinking loop: deterministic step execution replaces prompt-and-pray.
+//! Plan-driven thinking loop: deterministic step execution replaces prompt-and-pray. (updated)
 //!
 //! Each cycle: observe → get/create plan → execute one step → advance → sleep.
 //! Most steps are mechanical (no LLM). LLM is only called for planning,

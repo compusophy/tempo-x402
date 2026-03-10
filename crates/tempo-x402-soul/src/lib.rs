@@ -1,4 +1,4 @@
-//! x402-soul: agentic soul for x402 nodes.
+//! x402-soul: agentic soul for x402 nodes. (updated)
 //!
 //! Provides a periodic observe-think-record loop powered by an LLM (currently Gemini).
 //! The soul observes node state via the [`NodeObserver`] trait, reasons

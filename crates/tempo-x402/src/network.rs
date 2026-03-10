@@ -1,4 +1,4 @@
-//! Network validation utilities shared across x402 crates.
+//! Network validation utilities shared across x402 crates. (updated)
 //!
 //! Provides IP address classification for SSRF protection in webhooks,
 //! proxy validation, and other network-facing components.
