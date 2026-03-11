@@ -1,7 +1,8 @@
-//! System prompts per agent mode.
+//! System prompts and templates for the Soul engine.
 //!
-//! Five focused prompt builders for plan-driven execution, plus
-//! mode-specific system prompts for chat, code, and review.
+//! This module contains the system prompts and templates used by the Soul engine
+//! for agent reasoning and interaction. It includes focused prompt builders for
+//! plan-driven execution, plus mode-specific system prompts for chat, code, and review.
 
 use crate::config::SoulConfig;
 use crate::db::Nudge;
