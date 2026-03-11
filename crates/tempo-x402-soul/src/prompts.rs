@@ -20,6 +20,10 @@
 //! 2. **Planning**: Once a goal is set, the agent breaks it down into actionable steps.
 //! 3. **Execution**: The agent performs the planned actions, using mode-specific prompts to guide its behavior.
 //! 4. **Belief Update**: After completing tasks or encountering new information, the agent updates its internal world model.
+//!
+//! This modular approach allows the Soul to remain flexible yet focused, adapting its behavior to the specific mode while maintaining a consistent identity across generations.
+//!
+//! This modular approach allows the Soul to remain flexible yet focused, adapting its behavior to the specific mode while maintaining a consistent identity across generations.
 
 use crate::config::SoulConfig;
 use crate::db::Nudge;
