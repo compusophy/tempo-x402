@@ -1,7 +1,13 @@
 //! System prompts and templates for the Soul engine.
 //!
 //! This module serves as the cognitive blueprint for the agent, defining how it perceives
-//! its identity, environment, and objectives. It contains:
+//! its identity, environment, and objectives. It is a core component of the `soul` crate,
+//! acting as the bridge between the agent's internal world model and the LLM's reasoning
+//! capabilities. By defining how the agent represents itself and its goals, this module
+//! directly impacts the agent's evolution fitness, as higher-quality prompts lead to more
+//! effective code generation and more successful plan execution.
+//!
+//! It contains:
 //!
 //! - **Mode-specific instructions**: Specialized prompts for `Chat`, `Code`, and `Review` modes
 //!   that tailor the agent's behavior and constraints.
