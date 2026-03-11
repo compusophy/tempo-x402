@@ -1,8 +1,25 @@
 //! System prompts and templates for the Soul engine.
 //!
-//! This module contains the system prompts and templates used by the Soul engine
-//! for agent reasoning and interaction. It includes focused prompt builders for
-//! plan-driven execution, plus mode-specific system prompts for chat, code, and review.
+//! This module serves as the cognitive blueprint for the agent, defining how it perceives
+//! its identity, environment, and objectives. It contains:
+//!
+//! - **Mode-specific instructions**: Specialized prompts for `Chat`, `Code`, and `Review` modes
+//!   that tailor the agent's behavior and constraints.
+//! - **Plan-driven builders**: Dynamic prompt generators for goal creation, belief updates,
+//!   and planning, incorporating real-time node snapshots and fitness metrics.
+//! - **Git & Workflow Context**: Integration of the agent's lineage, repository ownership,
+//!   and deployment modes into its operational awareness.
+//!
+//! By centralizing these templates, the Soul engine ensures consistent reasoning across
+//! different LLM backends while maintaining the agent's unique personality and goals.
+//!
+//! ### Reasoning Architecture
+//!
+//! The Soul uses a multi-stage reasoning process:
+//! 1. **Goal Creation**: When the agent has no active goals, it analyzes its environment and beliefs to formulate new objectives.
+//! 2. **Planning**: Once a goal is set, the agent breaks it down into actionable steps.
+//! 3. **Execution**: The agent performs the planned actions, using mode-specific prompts to guide its behavior.
+//! 4. **Belief Update**: After completing tasks or encountering new information, the agent updates its internal world model.
 
 use crate::config::SoulConfig;
 use crate::db::Nudge;
