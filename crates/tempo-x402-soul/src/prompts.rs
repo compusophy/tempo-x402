@@ -22,8 +22,6 @@
 //! 4. **Belief Update**: After completing tasks or encountering new information, the agent updates its internal world model.
 //!
 //! This modular approach allows the Soul to remain flexible yet focused, adapting its behavior to the specific mode while maintaining a consistent identity across generations.
-//!
-//! This modular approach allows the Soul to remain flexible yet focused, adapting its behavior to the specific mode while maintaining a consistent identity across generations.
 
 use crate::config::SoulConfig;
 use crate::db::Nudge;
