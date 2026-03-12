@@ -1,3 +1,4 @@
+// Plan module for evolution strategy and task management.
 //! Plan-driven execution: deterministic step execution replaces prompt-and-pray.
 //!
 //! Goals decompose into Plans (ordered steps). Each cycle executes one step.
