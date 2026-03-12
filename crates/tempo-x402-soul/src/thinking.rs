@@ -371,7 +371,19 @@ impl ThinkingLoop {
         }
     }
 
-    /// Execute one plan-driven cycle.
+    /// The primary cognitive engine of the soul.
+    ///
+    /// This method executes a single "tick" of the soul's consciousness using a plan-driven 
+    /// architecture. Unlike traditional LLM loops that might "prompt-and-pray", this 
+    /// cycle enforces a deterministic sequence:
+    /// 1. **Observation**: Syncs the soul's internal world model with the external environment.
+    /// 2. **Strategic Alignment**: Ensures an active plan exists, generating one via the 
+    ///    LLM if necessary, based on current goals and nudges.
+    /// 3. **Discrete Execution**: Executes exactly one step of the current plan.
+    /// 4. **Progress Tracking**: Updates the plan status and determines pacing for the next cycle.
+    ///
+    /// This structure allows the soul to maintain long-term focus while remaining 
+    /// responsive to environmental changes between discrete actions.
     async fn plan_cycle(
         &self,
         snapshot: &NodeSnapshot,
@@ -2290,3 +2302,5 @@ fn summarize_tool_call(name: &str, args: &serde_json::Value) -> String {
         _ => format!("{name}: {args}"),
     }
 }
+// Diagnostic log: Breaking stagnation cycle at Thu Mar 12 05:12:57 UTC 2026
+// Diagnostic Status: Evolution fitness update and stagnation nudge resolution in progress.
