@@ -61,7 +61,11 @@ impl PlanStatus {
     }
 }
 
-/// A single step in a plan. 6 mechanical (no LLM), 3 LLM-assisted.
+/// A single step in a plan. Steps can be mechanical (tools) or LLM-assisted.
+///
+/// Most steps are mechanical and execute deterministic code or shell commands.
+/// LLM-assisted steps ([`PlanStep::GenerateCode`], [`PlanStep::EditCode`], [`PlanStep::Think`])
+/// use the LLM to process information or generate new content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PlanStep {
@@ -324,18 +328,38 @@ impl PlanStep {
 }
 
 /// A plan: ordered list of steps to achieve a goal.
+///
+/// Plans are decomposed from Goals and consist of a sequence of [`PlanStep`]s.
+/// They provide a deterministic execution path for the soul, reducing reliance
+/// on direct LLM prompting for every action.
+///
+/// Each cycle, the soul's loop typically:
+/// 1. Finds the active goal and its current plan.
+/// 2. Executes the current step of that plan.
+/// 3. Updates the plan's state (current step index, context, etc.).
+/// 4. If the step failed or requested a replan, it triggers the planning logic.
+///
+/// State is maintained across steps in the `context` map, allowing data
+/// (like file contents or command output) to be passed between steps using `store_as`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
+    /// Unique identifier for the plan.
     pub id: String,
+    /// Identifier of the goal this plan aims to achieve.
     pub goal_id: String,
+    /// Sequence of steps to execute.
     pub steps: Vec<PlanStep>,
+    /// Index of the current step being executed.
     pub current_step: usize,
+    /// Current status of the plan (active, completed, failed, etc.).
     pub status: PlanStatus,
     /// Accumulated context from step results. Keys from store_as fields.
     pub context: HashMap<String, String>,
     /// How many times this plan has been replanned.
     pub replan_count: u32,
+    /// Timestamp when the plan was created.
     pub created_at: i64,
+    /// Timestamp when the plan was last updated.
     pub updated_at: i64,
 }
 
