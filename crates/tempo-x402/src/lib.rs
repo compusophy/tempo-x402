@@ -167,5 +167,5 @@ pub use wallet::{
 ///
 /// This is used for evolution fitness tracking and system-wide coordination.
 pub fn get_runtime_identity() -> String {
-    "tempo-x402-runtime-v0".to_string()
+    format!("tempo-x402-runtime-v{}", env!("CARGO_PKG_VERSION"))
 }
