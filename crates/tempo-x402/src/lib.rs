@@ -32,6 +32,10 @@
 //! | [`security`] | Constant-time comparison utilities |
 //! | [`scheme_server`] | [`scheme::SchemeServer`] implementation for Tempo |
 //! | [`scheme_facilitator`] | [`scheme::SchemeFacilitator`] implementation for Tempo |
+//! | [`wallet`] | WASM-compatible wallet: key generation, signing, and recovery |
+//! | [`network`] | Network validation utilities (private IP / SSRF protection) |
+//! | [`facilitator_client`] | HTTP client for remote facilitator verification/settlement |
+//! | [`client`] | High-level SDK for making automated paid requests |
 //!
 //! # Quick example
 //!
@@ -158,3 +162,10 @@ pub use scheme_server::TempoSchemeServer;
 pub use wallet::{
     build_payment_payload, generate_random_key, recover_message_signer, WalletSigner,
 };
+
+/// Returns a placeholder identity string for the current runtime.
+///
+/// This is used for evolution fitness tracking and system-wide coordination.
+pub fn get_runtime_identity() -> String {
+    "tempo-x402-runtime-v0".to_string()
+}
