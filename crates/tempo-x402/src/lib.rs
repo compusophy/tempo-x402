@@ -1,8 +1,12 @@
-//! x402 payment protocol for the Tempo blockchain.
+//! # tempo-x402: Core logic foundation
 //!
-//! Implements [HTTP 402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/402)
+//! This crate serves as the core logic foundation for the `tempo-x402` ecosystem,
+//! focusing on the evolution, fitness tracking, and system-wide coordination
+//! of autonomous agents.
+//!
+//! By providing the fundamental primitives for [HTTP 402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/402)
 //! pay-per-request using EIP-712 signed authorizations and TIP-20 (ERC-20 compatible) token
-//! transfers on the Tempo chain.
+//! transfers on the Tempo chain, it enables a self-sustaining economy of agents.
 //!
 //! # Architecture
 //!
