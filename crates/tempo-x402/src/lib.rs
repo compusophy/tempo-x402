@@ -76,7 +76,7 @@ pub mod eip712;
 /// WASM-compatible wallet: key generation, EIP-712 signing, payment payloads.
 pub mod wallet;
 
-/// TIP-20 (ERC-20 compatible) on-chain token operations.
+/// TIP-20 (ERC-20 compatible) on-chain token operations (balance, allowance, transfer, approve).
 #[cfg(feature = "full")]
 pub mod tip20;
 
@@ -174,5 +174,5 @@ pub fn get_runtime_identity() -> String {
 // Evolution & Fitness Diagnostics
 // ---------------------------------------------------------------------------
 
-// last_evolution_check: 2025-05-22T10:30:00Z
+// last_evolution_check: 2025-05-22T11:00:00Z
 // fitness_summary: system healthy, economic activity detected, peer discovery active
