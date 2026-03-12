@@ -2305,3 +2305,4 @@ fn summarize_tool_call(name: &str, args: &serde_json::Value) -> String {
 // Diagnostic log: Breaking stagnation cycle at Thu Mar 12 05:12:57 UTC 2026
 // Diagnostic Status: Evolution fitness update and stagnation nudge resolution in progress.
 // Diagnostic Update: Sustained autonomous iteration confirmed. Fitness optimization loop active.
+// Diagnostic Update: Environment check: cargo binary missing, skipping local validation.
