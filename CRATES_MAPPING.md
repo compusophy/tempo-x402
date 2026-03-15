@@ -4,6 +4,7 @@ This document outlines the directory structure of the workspace and identifies s
 
 ## **Root**
 *   `Cargo.toml`
+*   `Cargo.lock`
 *   `CRATES_MAPPING.md`
 
 ## **tempo-x402-node**
@@ -54,7 +55,7 @@ Gateway and facilitator logic for handling requests, proxying, and metrics.
 *   `crates/tempo-x402-gateway/src/facilitator/state.rs`
 
 ## **tempo-x402-soul**
-The "Soul" of the agent, containing logic for thinking, planning, memory, and tool usage.
+Agentic soul for x402 nodes: observe-think-record loop powered by Gemini.
 *   `crates/tempo-x402-soul/Cargo.toml`
 *   `crates/tempo-x402-soul/src/lib.rs`
 *   `crates/tempo-x402-soul/src/observer.rs`
@@ -80,64 +81,53 @@ The "Soul" of the agent, containing logic for thinking, planning, memory, and to
 *   `crates/tempo-x402-soul/src/fitness.rs`
 *   `crates/tempo-x402-soul/src/plan.rs`
 
-## **tempo-x402** (Core Protocol Library)
-Core library implementing the x402 protocol, HMAC signing, and communication schemes.
-*   `crates/tempo-x402/Cargo.toml`
-*   `crates/tempo-x402/src/lib.rs`
-*   `crates/tempo-x402/src/hmac.rs`
-*   `crates/tempo-x402/src/response.rs`
-*   `crates/tempo-x402/src/scheme.rs`
-*   `crates/tempo-x402/src/scheme_server.rs`
-*   `crates/tempo-x402/src/security.rs`
-*   `crates/tempo-x402/src/eip712.rs`
-*   `crates/tempo-x402/src/constants.rs`
-*   `crates/tempo-x402/src/approve.rs`
-*   `crates/tempo-x402/src/nonce_store.rs`
-*   `crates/tempo-x402/src/facilitator_client.rs`
-*   `crates/tempo-x402/src/tip20.rs`
-*   `crates/tempo-x402/src/payment.rs`
-*   `crates/tempo-x402/src/scheme_facilitator.rs`
-*   `crates/tempo-x402/src/network.rs`
-*   `crates/tempo-x402/src/error.rs`
-*   `crates/tempo-x402/src/wallet.rs`
-*   `crates/tempo-x402/src/bin/x402-client.rs`
-*   `crates/tempo-x402/src/client/mod.rs`
-*   `crates/tempo-x402/src/client/http_client.rs`
-*   `crates/tempo-x402/src/client/scheme_client.rs`
-*   `crates/tempo-x402/tests/verification_failures.rs`
-*   `crates/tempo-x402/tests/e2e_clone.rs`
-*   `crates/tempo-x402/tests/e2e_gateway.rs`
-
 ## **tempo-x402-identity**
-Identity management, on-chain contracts, and reputation.
+Identity and reputation management for agents.
 *   `crates/tempo-x402-identity/Cargo.toml`
+*   `crates/tempo-x402-identity/src/lib.rs`
 *   `crates/tempo-x402-identity/src/contracts.rs`
 *   `crates/tempo-x402-identity/src/deploy.rs`
 *   `crates/tempo-x402-identity/src/discovery.rs`
-*   `crates/tempo-x402-identity/src/lib.rs`
 *   `crates/tempo-x402-identity/src/onchain.rs`
 *   `crates/tempo-x402-identity/src/recovery.rs`
 *   `crates/tempo-x402-identity/src/reputation.rs`
 *   `crates/tempo-x402-identity/src/types.rs`
 *   `crates/tempo-x402-identity/src/validation.rs`
 
-## **tempo-x402-app**
-Frontend application and wallet interface.
-*   `crates/tempo-x402-app/Cargo.toml`
-*   `crates/tempo-x402-app/Trunk.toml`
-*   `crates/tempo-x402-app/src/api.rs`
-*   `crates/tempo-x402-app/src/lib.rs`
-*   `crates/tempo-x402-app/src/wallet.rs`
-*   `crates/tempo-x402-app/src/wallet_crypto.rs`
-*   `crates/tempo-x402-app/index.html`
-
 ## **tempo-x402-security-audit**
-Security invariants and audit testing.
+Security auditing tools for nodes and scripts.
 *   `crates/tempo-x402-security-audit/Cargo.toml`
 *   `crates/tempo-x402-security-audit/src/lib.rs`
-*   `crates/tempo-x402-security-audit/tests/security_invariants.rs`
 
-## **Scripts**
-*   `scripts/network_stats.py`
-*   `scripts/peer-health.sh`
-*   `scripts/prune_endpoints.sh`
+## **tempo-x402-app**
+High-level application logic and wallet interaction.
+*   `crates/tempo-x402-app/Cargo.toml`
+*   `crates/tempo-x402-app/src/lib.rs`
+*   `crates/tempo-x402-app/src/api.rs`
+*   `crates/tempo-x402-app/src/wallet.rs`
+*   `crates/tempo-x402-app/src/wallet_crypto.rs`
+
+## **tempo-x402**
+Core protocol implementation of x402, payment schemes, and client.
+*   `crates/tempo-x402/Cargo.toml`
+*   `crates/tempo-x402/src/lib.rs`
+*   `crates/tempo-x402/src/approve.rs`
+*   `crates/tempo-x402/src/constants.rs`
+*   `crates/tempo-x402/src/eip712.rs`
+*   `crates/tempo-x402/src/error.rs`
+*   `crates/tempo-x402/src/facilitator_client.rs`
+*   `crates/tempo-x402/src/hmac.rs`
+*   `crates/tempo-x402/src/network.rs`
+*   `crates/tempo-x402/src/nonce_store.rs`
+*   `crates/tempo-x402/src/payment.rs`
+*   `crates/tempo-x402/src/response.rs`
+*   `crates/tempo-x402/src/scheme.rs`
+*   `crates/tempo-x402/src/scheme_facilitator.rs`
+*   `crates/tempo-x402/src/scheme_server.rs`
+*   `crates/tempo-x402/src/security.rs`
+*   `crates/tempo-x402/src/tip20.rs`
+*   `crates/tempo-x402/src/wallet.rs`
+*   `crates/tempo-x402/src/bin/x402-client.rs`
+*   `crates/tempo-x402/src/client/mod.rs`
+*   `crates/tempo-x402/src/client/http_client.rs`
+*   `crates/tempo-x402/src/client/scheme_client.rs`
