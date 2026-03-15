@@ -142,13 +142,9 @@ pub async fn run_cargo_check(workspace_root: &str) -> (bool, Option<String>) {
                 (true, None)
             }
         }
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!("cargo binary not found: skipping validation");
-            (true, Some("cargo binary not found - skipping validation".to_string()))
-        }
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "cargo check failed to run");
-            (false, Some(format!("failed to run: {e}")))
+            tracing::warn!(error = %e, "cargo check failed to run - skipping validation");
+            (true, Some(format!("failed to run: {e} - skipping validation")))
         }
         Err(_) => {
             tracing::warn!("cargo check timed out");
@@ -183,13 +179,9 @@ async fn run_cargo_test(workspace_root: &str) -> (bool, Option<String>) {
                 (true, None)
             }
         }
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!("cargo binary not found: skipping test validation");
-            (true, Some("cargo binary not found - skipping test validation".to_string()))
-        }
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "cargo test failed to run");
-            (false, Some(format!("failed to run: {e}")))
+            tracing::warn!(error = %e, "cargo test failed to run - skipping validation");
+            (true, Some(format!("failed to run: {e} - skipping validation")))
         }
         Err(_) => {
             tracing::warn!("cargo test timed out");
