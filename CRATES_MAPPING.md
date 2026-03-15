@@ -1,4 +1,4 @@
-# Crates Mapping
+# Crates Mapping (Updated)
 
 This document outlines the directory structure of the workspace and identifies source files accessible for logic improvements and research.
 
@@ -77,8 +77,8 @@ The "Soul" of the agent, containing logic for thinking, planning, memory, and to
 *   `crates/tempo-x402-soul/src/thinking.rs`
 *   `crates/tempo-x402-soul/src/error.rs`
 *   `crates/tempo-x402-soul/src/world_model.rs`
-*   `crates/tempo-x402-soul/src/plan.rs`
 *   `crates/tempo-x402-soul/src/fitness.rs`
+*   `crates/tempo-x402-soul/src/plan.rs`
 
 ## **tempo-x402** (Core Protocol Library)
 Core library implementing the x402 protocol, HMAC signing, and communication schemes.
@@ -104,6 +104,9 @@ Core library implementing the x402 protocol, HMAC signing, and communication sch
 *   `crates/tempo-x402/src/client/mod.rs`
 *   `crates/tempo-x402/src/client/http_client.rs`
 *   `crates/tempo-x402/src/client/scheme_client.rs`
+*   `crates/tempo-x402/tests/verification_failures.rs`
+*   `crates/tempo-x402/tests/e2e_clone.rs`
+*   `crates/tempo-x402/tests/e2e_gateway.rs`
 
 ## **tempo-x402-identity**
 Identity management, on-chain contracts, and reputation.
@@ -133,3 +136,8 @@ Security invariants and audit testing.
 *   `crates/tempo-x402-security-audit/Cargo.toml`
 *   `crates/tempo-x402-security-audit/src/lib.rs`
 *   `crates/tempo-x402-security-audit/tests/security_invariants.rs`
+
+## **Scripts**
+*   `scripts/network_stats.py`
+*   `scripts/peer-health.sh`
+*   `scripts/prune_endpoints.sh`
