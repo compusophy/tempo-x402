@@ -72,13 +72,14 @@ The "Soul" of the agent, containing logic for thinking, planning, memory, and to
 *   `crates/tempo-x402-soul/src/tool_registry.rs`
 *   `crates/tempo-x402-soul/src/llm.rs`
 *   `crates/tempo-x402-soul/src/prompts.rs`
+*   `crates/tempo-x402-soul/src/retry_utils.rs`
 *   `crates/tempo-x402-soul/src/thinking.rs`
 *   `crates/tempo-x402-soul/src/error.rs`
 *   `crates/tempo-x402-soul/src/world_model.rs`
 *   `crates/tempo-x402-soul/src/plan.rs`
 *   `crates/tempo-x402-soul/src/fitness.rs`
 
-## **tempo-x402 (Core Protocol Library)**
+## **tempo-x402** (Core Protocol Library)
 Core library implementing the x402 protocol, HMAC signing, and communication schemes.
 *   `crates/tempo-x402/Cargo.toml`
 *   `crates/tempo-x402/src/lib.rs`
