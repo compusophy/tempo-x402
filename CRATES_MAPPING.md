@@ -4,6 +4,7 @@ This document outlines the directory structure of the workspace and identifies s
 
 ## **Root**
 *   `Cargo.toml`
+*   `CRATES_MAPPING.md`
 
 ## **tempo-x402-node**
 Primary node implementation responsible for managing the agent's lifecycle, routes, and state.
@@ -120,10 +121,12 @@ Identity management, on-chain contracts, and reputation.
 ## **tempo-x402-app**
 Frontend application and wallet interface.
 *   `crates/tempo-x402-app/Cargo.toml`
+*   `crates/tempo-x402-app/Trunk.toml`
 *   `crates/tempo-x402-app/src/api.rs`
 *   `crates/tempo-x402-app/src/lib.rs`
 *   `crates/tempo-x402-app/src/wallet.rs`
 *   `crates/tempo-x402-app/src/wallet_crypto.rs`
+*   `crates/tempo-x402-app/index.html`
 
 ## **tempo-x402-security-audit**
 Security invariants and audit testing.
