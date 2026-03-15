@@ -72,6 +72,49 @@ impl GitContext {
         &self.instance_id
     }
 
+    /// Check if a path is protected and should not be staged or committed.
+    fn is_protected_path(&self, path: &str) -> bool {
+        let normalized = path.replace('\\', "/");
+        let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+        let normalized = normalized.strip_prefix('/').unwrap_or(normalized);
+
+        // Files that are protected anywhere in the tree
+        let protected_files = [
+            "Cargo.lock",
+            "Cargo.toml",
+            "tools.rs",
+            "llm.rs",
+            "db.rs",
+            "error.rs",
+            "guard.rs",
+            "config.rs",
+            "tool_registry.rs",
+            "brain.rs",
+            "computer_use.rs",
+            "capability.rs",
+            "feedback.rs",
+            "benchmark.rs",
+            "elo.rs",
+        ];
+
+        // Directories that are protected
+        let protected_dirs = [".github/", "identity/", "node/routes/", "gateway/"];
+
+        for f in protected_files {
+            if normalized == f || normalized.ends_with(&format!("/{f}")) {
+                return true;
+            }
+        }
+
+        for d in protected_dirs {
+            if normalized.starts_with(d) || normalized.contains(&format!("/{d}")) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Whether fork-based workflow is active.
     fn uses_fork(&self) -> bool {
         self.fork_repo.is_some()
@@ -209,13 +252,30 @@ impl GitContext {
     }
 
     /// Stage specific files for commit.
+    /// Filters out protected paths and files.
     pub async fn stage_files(&self, files: &[&str]) -> Result<GitResult, String> {
         if files.is_empty() {
             return Err("no files to stage".to_string());
         }
 
+        let mut filtered = Vec::new();
+        for file in files {
+            if self.is_protected_path(file) {
+                tracing::warn!(file = %file, "skipping protected file in git staging");
+                continue;
+            }
+            filtered.push(*file);
+        }
+
+        if filtered.is_empty() {
+            return Ok(GitResult {
+                success: true,
+                output: "no files staged (all were protected)".to_string(),
+            });
+        }
+
         let mut args = vec!["add", "--"];
-        args.extend(files);
+        args.extend(filtered);
         self.run_git(&args).await
     }
 
@@ -227,6 +287,17 @@ impl GitContext {
 
     /// Commit staged changes with a message.
     pub async fn commit(&self, message: &str) -> Result<GitResult, String> {
+        // Validation step: check if any protected files are staged
+        let staged = self.run_git(&["diff", "--cached", "--name-only"]).await?;
+        for file in staged.output.lines() {
+            if self.is_protected_path(file) {
+                return Err(format!(
+                    "STAGING VIOLATION: protected file '{}' is staged for commit",
+                    file
+                ));
+            }
+        }
+
         self.run_git(&["commit", "-m", message]).await
     }
 

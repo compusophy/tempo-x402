@@ -1,0 +1,28 @@
+--- crates/tempo-x402-soul/src/tools.rs
++++ crates/tempo-x402-soul/src/tools.rs
+@@ -534,13 +534,22 @@
+         let resolved = self.resolve_path(path)?;
+ 
+-        // Check file size first
++        // Path validation: ensure it's a file and not a directory
++        if resolved.is_dir() {
++            return Err(format!(
++                "cannot read directory: {path} (use list_directory instead)"
++            ));
++        }
++        if !resolved.is_file() {
++            return Err(format!(
++                "cannot read {path}: not a regular file or does not exist"
++            ));
++        }
++
++        // Check file size
+         let metadata = tokio::fs::metadata(&resolved)
+             .await
+             .map_err(|e| format!("cannot read file: {e}"))?;
+-
+-        if !metadata.is_file() {
+-            return Err(format!("not a file: {path}"));
+-        }
+ 
+         if metadata.len() > MAX_READ_BYTES as u64 && offset.is_none() && limit.is_none() {

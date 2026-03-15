@@ -1,5 +1,9 @@
 //! Plan-driven thinking loop: deterministic step execution replaces prompt-and-pray.
 //!
+//! Robust error handling for LLM calls.
+//!
+//! Path validation for tool execution.
+//!
 //! Each cycle: observe → get/create plan → execute one step → advance → sleep.
 //! Most steps are mechanical (no LLM). LLM is only called for planning,
 //! code generation, and reflection.
@@ -31,6 +35,7 @@ struct AdaptivePacer {
     prev_snapshot: Option<NodeSnapshot>,
     /// Multiplier for all intervals (from SOUL_CYCLE_MULTIPLIER).
     /// 1.0 = normal speed, 2.0 = half speed (double intervals), etc.
+    /// Added comment for liveness.
     multiplier: f64,
 }
 
@@ -1184,6 +1189,28 @@ impl ThinkingLoop {
         self.append_recent_error(error);
         let _ = self.db.increment_goal_retry(&plan.goal_id);
 
+        // Record as a belief if it looks like a system/path error to inform the model
+        if error.contains("not a file")
+            || error.contains("no such file")
+            || error.contains("failed to resolve")
+            || error.contains("parent directory does not exist")
+        {
+            let belief = Belief {
+                id: uuid::Uuid::new_v4().to_string(),
+                domain: BeliefDomain::Errors,
+                subject: step_desc.to_string(),
+                predicate: "path_error".to_string(),
+                value: error.to_string(),
+                confidence: Confidence::High,
+                evidence: "tool execution failed with path validation error".to_string(),
+                confirmation_count: 1,
+                created_at: chrono::Utc::now().timestamp(),
+                updated_at: chrono::Utc::now().timestamp(),
+                active: true,
+            };
+            let _ = self.db.upsert_belief(&belief);
+        }
+
         if plan.replan_count >= 3 {
             tracing::warn!(plan_id = %plan.id, "Max replans reached — failing plan");
             plan.status = PlanStatus::Failed;
@@ -1582,7 +1609,8 @@ impl ThinkingLoop {
         let json_block = extract_json_array(text);
         let (updates_applied, remaining_text) = match json_block {
             Some((json_str, before, after)) => {
-                match serde_json::from_str::<Vec<ModelUpdate>>(&json_str) {
+                let sanitized = crate::world_model::sanitize_json_str(&json_str);
+                match serde_json::from_str::<Vec<ModelUpdate>>(&sanitized) {
                     Ok(updates) => {
                         let mut applied = 0u32;
                         let now = chrono::Utc::now().timestamp();

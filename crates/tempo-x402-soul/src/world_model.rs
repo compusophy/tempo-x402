@@ -18,6 +18,7 @@ pub enum BeliefDomain {
     #[serde(rename = "self")]
     Self_,
     Identity,
+    Errors,
 }
 
 impl BeliefDomain {
@@ -29,6 +30,7 @@ impl BeliefDomain {
             Self::Strategy => "strategy",
             Self::Self_ => "self",
             Self::Identity => "identity",
+            Self::Errors => "errors",
         }
     }
 
@@ -40,6 +42,7 @@ impl BeliefDomain {
             "strategy" => Some(Self::Strategy),
             "self" => Some(Self::Self_),
             "identity" => Some(Self::Identity),
+            "errors" => Some(Self::Errors),
             _ => None,
         }
     }
@@ -53,6 +56,7 @@ impl BeliefDomain {
             BeliefDomain::Strategy,
             BeliefDomain::Self_,
             BeliefDomain::Identity,
+            BeliefDomain::Errors,
         ]
     }
 }
@@ -82,6 +86,17 @@ impl Confidence {
             _ => Self::Medium,
         }
     }
+}
+
+/// Sanitize a string by removing control characters (\u0000-\u001F)
+/// except for common whitespace (tab, newline, carriage return).
+///
+/// This is particularly important when parsing JSON from LLM outputs or
+/// peer responses that might contain ANSI escape codes or other noise.
+pub fn sanitize_json_str(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
+        .collect()
 }
 
 /// A structured belief in the world model.
@@ -349,6 +364,13 @@ mod tests {
             let parsed = Confidence::parse(s);
             assert_eq!(*conf, parsed);
         }
+    }
+
+    #[test]
+    fn test_sanitize_json_str() {
+        let input = "clean\u{0000}text\nwith\r\tcontrols\u{001F}";
+        let expected = "cleantext\nwith\r\tcontrols";
+        assert_eq!(sanitize_json_str(input), expected);
     }
 
     #[test]

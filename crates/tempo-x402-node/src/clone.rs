@@ -326,60 +326,88 @@ async fn create_github_branch(token: &str, repo: &str, branch: &str) -> Result<(
         .build()
         .map_err(|e| CloneError::Other(format!("HTTP client error: {e}")))?;
 
-    // 1. Get main branch SHA
-    let ref_url = format!("https://api.github.com/repos/{repo}/git/ref/heads/main");
-    let ref_resp = http
-        .get(&ref_url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "x402-node")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .send()
-        .await
-        .map_err(|e| CloneError::Other(format!("GitHub API error (get ref): {e}")))?;
+    let mut last_err = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            let delay = std::time::Duration::from_millis(1000 * 2u64.pow(attempt as u32));
+            tokio::time::sleep(delay).await;
+        }
 
-    if !ref_resp.status().is_success() {
-        let status = ref_resp.status();
-        let body = ref_resp.text().await.unwrap_or_default();
-        return Err(CloneError::Other(format!(
-            "GitHub GET ref failed (HTTP {status}): {body}"
-        )));
+        // 1. Get main branch SHA
+        let ref_url = format!("https://api.github.com/repos/{repo}/git/ref/heads/main");
+        let ref_resp = match http
+            .get(&ref_url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "x402-node")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(CloneError::Other(format!("GitHub API error (get ref): {e}")));
+                    continue;
+                }
+            };
+
+        if !ref_resp.status().is_success() {
+            let status = ref_resp.status();
+            let body = ref_resp.text().await.unwrap_or_default();
+            if status.as_u16() == 429 || status.is_server_error() {
+                last_err = Some(CloneError::Other(format!("GitHub GET ref failed (HTTP {status}): {body}")));
+                continue;
+            }
+            return Err(CloneError::Other(format!(
+                "GitHub GET ref failed (HTTP {status}): {body}"
+            )));
+        }
+
+        let ref_json: serde_json::Value = ref_resp
+            .json()
+            .await
+            .map_err(|e| CloneError::Other(format!("GitHub API parse error: {e}")))?;
+
+        let sha = ref_json["object"]["sha"]
+            .as_str()
+            .ok_or_else(|| CloneError::Other("missing SHA in GitHub ref response".to_string()))?;
+
+        // 2. Create new branch
+        let create_url = format!("https://api.github.com/repos/{repo}/git/refs");
+        let create_resp = match http
+            .post(&create_url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "x402-node")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&serde_json::json!({
+                "ref": format!("refs/heads/{branch}"),
+                "sha": sha,
+            }))
+            .send()
+            .await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(CloneError::Other(format!("GitHub API error (create ref): {e}")));
+                    continue;
+                }
+            };
+
+        if !create_resp.status().is_success() {
+            let status = create_resp.status();
+            let body = create_resp.text().await.unwrap_or_default();
+            if status.as_u16() == 429 || status.is_server_error() {
+                last_err = Some(CloneError::Other(format!("GitHub create branch failed (HTTP {status}): {body}")));
+                continue;
+            }
+            return Err(CloneError::Other(format!(
+                "GitHub create branch failed (HTTP {status}): {body}"
+            )));
+        }
+
+        return Ok(());
     }
 
-    let ref_json: serde_json::Value = ref_resp
-        .json()
-        .await
-        .map_err(|e| CloneError::Other(format!("GitHub API parse error: {e}")))?;
-
-    let sha = ref_json["object"]["sha"]
-        .as_str()
-        .ok_or_else(|| CloneError::Other("missing SHA in GitHub ref response".to_string()))?;
-
-    // 2. Create new branch
-    let create_url = format!("https://api.github.com/repos/{repo}/git/refs");
-    let create_resp = http
-        .post(&create_url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "x402-node")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .json(&serde_json::json!({
-            "ref": format!("refs/heads/{branch}"),
-            "sha": sha,
-        }))
-        .send()
-        .await
-        .map_err(|e| CloneError::Other(format!("GitHub API error (create ref): {e}")))?;
-
-    if !create_resp.status().is_success() {
-        let status = create_resp.status();
-        let body = create_resp.text().await.unwrap_or_default();
-        return Err(CloneError::Other(format!(
-            "GitHub create branch failed (HTTP {status}): {body}"
-        )));
-    }
-
-    Ok(())
+    Err(last_err.unwrap_or_else(|| CloneError::Other("GitHub branch creation failed after retries".to_string())))
 }
 
 /// Fast-forward a branch to main's HEAD via the GitHub REST API.

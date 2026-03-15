@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const RAILWAY_API_URL: &str = "https://backboard.railway.app/graphql/v2";
-const MAX_RETRIES: u32 = 3;
-const BASE_DELAY_MS: u64 = 500;
+const MAX_RETRIES: u32 = 5;
+const BASE_DELAY_MS: u64 = 1000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RailwayError {

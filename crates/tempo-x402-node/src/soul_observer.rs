@@ -1,5 +1,7 @@
 //! NodeObserver implementation for the x402 node.
 //!
+//! Standardized retry logic for peer discovery.
+//!
 //! Reads analytics from the gateway database and identity info
 //! to build a NodeSnapshot for the soul's thinking loop.
 
@@ -42,6 +44,7 @@ impl NodeObserverImpl {
 impl NodeObserverImpl {
     /// Refresh the peers cache by querying parent's /instance/siblings and each peer's /instance/info.
     /// Called periodically from the thinking loop context (async).
+    /// Updated for robust handling with exponential backoff.
     pub async fn refresh_peers(&self) {
         use x402_soul::observer::PeerInfo;
 
@@ -84,41 +87,67 @@ impl NodeObserverImpl {
                 .timeout(std::time::Duration::from_secs(10))
                 .build();
             if let Ok(client) = client {
-                if let Ok(resp) = client.get(&siblings_url).send().await {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if let Some(siblings) = json.get("siblings").and_then(|v| v.as_array()) {
-                            for sib in siblings {
-                                let inst_id = sib
-                                    .get("instance_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or_default();
-                                // Skip self
-                                if self_instance_id == Some(inst_id) {
-                                    continue;
+                let mut last_err = None;
+                for attempt in 0..3 {
+                    if attempt > 0 {
+                        let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt as u32));
+                        tokio::time::sleep(delay).await;
+                    }
+                    match client.get(&siblings_url).send().await {
+                        Ok(resp) => {
+                            let status = resp.status();
+                            if status.is_success() {
+                                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                    if let Some(siblings) = json.get("siblings").and_then(|v| v.as_array()) {
+                                        for sib in siblings {
+                                            let inst_id = sib
+                                                .get("instance_id")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or_default();
+                                            // Skip self
+                                            if self_instance_id == Some(inst_id) {
+                                                continue;
+                                            }
+                                            let url = match sib.get("url").and_then(|v| v.as_str()) {
+                                                Some(u) => u.to_string(),
+                                                None => continue,
+                                            };
+                                            let mut peer = PeerInfo {
+                                                instance_id: inst_id.to_string(),
+                                                url: url.clone(),
+                                                address: sib
+                                                    .get("address")
+                                                    .and_then(|v| v.as_str())
+                                                    .map(String::from),
+                                                version: None,
+                                                endpoints: Vec::new(),
+                                            };
+                                            // Fetch peer's /instance/info for endpoints
+                                            if let Ok(info) = Self::fetch_peer_info(&url).await {
+                                                peer.version = info.version;
+                                                peer.endpoints = info.endpoints;
+                                            }
+                                            peers.push(peer);
+                                        }
+                                    }
                                 }
-                                let url = match sib.get("url").and_then(|v| v.as_str()) {
-                                    Some(u) => u.to_string(),
-                                    None => continue,
-                                };
-                                let mut peer = PeerInfo {
-                                    instance_id: inst_id.to_string(),
-                                    url: url.clone(),
-                                    address: sib
-                                        .get("address")
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from),
-                                    version: None,
-                                    endpoints: Vec::new(),
-                                };
-                                // Fetch peer's /instance/info for endpoints
-                                if let Ok(info) = Self::fetch_peer_info(&url).await {
-                                    peer.version = info.version;
-                                    peer.endpoints = info.endpoints;
-                                }
-                                peers.push(peer);
+                                last_err = None;
+                                break;
+                            } else if status.as_u16() == 429 || status.is_server_error() {
+                                last_err = Some(format!("HTTP {}", status));
+                                continue;
+                            } else {
+                                break;
                             }
                         }
+                        Err(e) => {
+                            last_err = Some(e.to_string());
+                            continue;
+                        }
                     }
+                }
+                if let Some(err) = last_err {
+                    tracing::warn!(error = %err, url = %siblings_url, "Failed to fetch siblings after retries");
                 }
             }
         }
@@ -133,41 +162,67 @@ impl NodeObserverImpl {
         peer_url: &str,
     ) -> Result<PeerInfoResult, Box<dyn std::error::Error + Send + Sync>> {
         use x402_soul::observer::PeerEndpoint;
+        use std::time::Duration;
 
         let url = format!("{}/instance/info", peer_url.trim_end_matches('/'));
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        let resp = client.get(&url).send().await?;
-        let json: serde_json::Value = resp.json().await?;
 
-        let version = json
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let mut endpoints = Vec::new();
-        if let Some(eps) = json.get("endpoints").and_then(|v| v.as_array()) {
-            for ep in eps {
-                endpoints.push(PeerEndpoint {
-                    slug: ep
-                        .get("slug")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    price: ep
-                        .get("price")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("0")
-                        .to_string(),
-                    description: ep
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                });
+        let mut last_err = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                let delay = Duration::from_millis(500 * 2u64.pow(attempt as u32));
+                tokio::time::sleep(delay).await;
+            }
+
+            match client.get(&url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        let json: serde_json::Value = resp.json().await?;
+                        let version = json
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        let mut endpoints = Vec::new();
+                        if let Some(eps) = json.get("endpoints").and_then(|v| v.as_array()) {
+                            for ep in eps {
+                                endpoints.push(PeerEndpoint {
+                                    slug: ep
+                                        .get("slug")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    price: ep
+                                        .get("price")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("0")
+                                        .to_string(),
+                                    description: ep
+                                        .get("description")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from),
+                                });
+                            }
+                        }
+                        return Ok(PeerInfoResult { version, endpoints });
+                    } else if status.as_u16() == 429 || status.is_server_error() {
+                        last_err = Some(format!("HTTP {}: {}", status, url).into());
+                        continue;
+                    } else {
+                        return Err(format!("HTTP {}: {}", status, url).into());
+                    }
+                }
+                Err(e) => {
+                    last_err = Some(e.into());
+                    continue;
+                }
             }
         }
 
-        Ok(PeerInfoResult { version, endpoints })
+        Err(last_err.unwrap_or_else(|| "Failed after retries".into()))
     }
 }
 

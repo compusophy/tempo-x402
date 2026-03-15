@@ -23,6 +23,7 @@ pub mod observer;
 pub mod persistent_memory;
 pub mod plan;
 pub mod prompts;
+pub mod retry_utils;
 pub mod thinking;
 pub mod tool_registry;
 pub mod tools;

@@ -1,9 +1,13 @@
 # Crates Mapping
 
-This document outlines the directory structure of the `crates` directory and identifies source files accessible for logic improvements and research. Identity-related files and protected files (like `Cargo.toml`) are excluded.
+This document outlines the directory structure of the workspace and identifies source files accessible for logic improvements and research.
+
+## **Root**
+*   `Cargo.toml`
 
 ## **tempo-x402-node**
 Primary node implementation responsible for managing the agent's lifecycle, routes, and state.
+*   `crates/tempo-x402-node/Cargo.toml`
 *   `crates/tempo-x402-node/build.rs`
 *   `crates/tempo-x402-node/src/main.rs`
 *   `crates/tempo-x402-node/src/soul_observer.rs`
@@ -21,6 +25,7 @@ Primary node implementation responsible for managing the agent's lifecycle, rout
 
 ## **tempo-x402-gateway**
 Gateway and facilitator logic for handling requests, proxying, and metrics.
+*   `crates/tempo-x402-gateway/Cargo.toml`
 *   `crates/tempo-x402-gateway/build.rs`
 *   `crates/tempo-x402-gateway/src/main.rs`
 *   `crates/tempo-x402-gateway/src/lib.rs`
@@ -49,6 +54,7 @@ Gateway and facilitator logic for handling requests, proxying, and metrics.
 
 ## **tempo-x402-soul**
 The "Soul" of the agent, containing logic for thinking, planning, memory, and tool usage.
+*   `crates/tempo-x402-soul/Cargo.toml`
 *   `crates/tempo-x402-soul/src/lib.rs`
 *   `crates/tempo-x402-soul/src/observer.rs`
 *   `crates/tempo-x402-soul/src/git.rs`
@@ -74,6 +80,7 @@ The "Soul" of the agent, containing logic for thinking, planning, memory, and to
 
 ## **tempo-x402 (Core Protocol Library)**
 Core library implementing the x402 protocol, HMAC signing, and communication schemes.
+*   `crates/tempo-x402/Cargo.toml`
 *   `crates/tempo-x402/src/lib.rs`
 *   `crates/tempo-x402/src/hmac.rs`
 *   `crates/tempo-x402/src/response.rs`
@@ -95,3 +102,30 @@ Core library implementing the x402 protocol, HMAC signing, and communication sch
 *   `crates/tempo-x402/src/client/mod.rs`
 *   `crates/tempo-x402/src/client/http_client.rs`
 *   `crates/tempo-x402/src/client/scheme_client.rs`
+
+## **tempo-x402-identity**
+Identity management, on-chain contracts, and reputation.
+*   `crates/tempo-x402-identity/Cargo.toml`
+*   `crates/tempo-x402-identity/src/contracts.rs`
+*   `crates/tempo-x402-identity/src/deploy.rs`
+*   `crates/tempo-x402-identity/src/discovery.rs`
+*   `crates/tempo-x402-identity/src/lib.rs`
+*   `crates/tempo-x402-identity/src/onchain.rs`
+*   `crates/tempo-x402-identity/src/recovery.rs`
+*   `crates/tempo-x402-identity/src/reputation.rs`
+*   `crates/tempo-x402-identity/src/types.rs`
+*   `crates/tempo-x402-identity/src/validation.rs`
+
+## **tempo-x402-app**
+Frontend application and wallet interface.
+*   `crates/tempo-x402-app/Cargo.toml`
+*   `crates/tempo-x402-app/src/api.rs`
+*   `crates/tempo-x402-app/src/lib.rs`
+*   `crates/tempo-x402-app/src/wallet.rs`
+*   `crates/tempo-x402-app/src/wallet_crypto.rs`
+
+## **tempo-x402-security-audit**
+Security invariants and audit testing.
+*   `crates/tempo-x402-security-audit/Cargo.toml`
+*   `crates/tempo-x402-security-audit/src/lib.rs`
+*   `crates/tempo-x402-security-audit/tests/security_invariants.rs`

@@ -477,6 +477,7 @@ pub fn replan_prompt(goal: &Goal, failed_step_desc: &str, error: &str) -> String
          {}\n\n\
          # Task\n\
          The step above failed. Adjust the remaining plan.\n\
+         If the failure was file-related, use `list_dir` or `execute_shell` with `ls` or `find` to verify the directory structure before trying again. Do NOT assume paths exist.\n\n\
          Respond with ONLY a JSON array of replacement steps (same format as planning).\n\
          You may need to add investigation steps before retrying.\n\
          Max 20 steps.",
@@ -547,13 +548,14 @@ pub(crate) const CHAT_INSTRUCTIONS: &str = "\
 You are in CHAT mode — interactive conversation with a user.
 Answer helpfully and concisely. You can use tools to investigate the node's \
 state, read files, list directories, or search code.
-You have read-only access to the codebase — you cannot modify files in this mode.";
+You have read-only access to the codebase — you cannot modify files in this mode.
+Do NOT assume directory structures; use `list_directory` or `execute_shell` with `ls` or `find` to verify paths if you encounter errors.";
 
 pub(crate) const CODE_INSTRUCTIONS: &str = "\
 You are in CODE mode — you can read, write, and edit files in the codebase.
 
 Workflow:
-1. Understand the task — read relevant files first
+1. Understand the task — read relevant files first. Do NOT assume directory structures; verify them if unsure.
 2. Make changes — use edit_file (preferred) or write_file
 3. Validate — some critical files are protected and cannot be modified
 4. Commit — use commit_changes to validate (cargo check + test) and commit
@@ -564,10 +566,12 @@ Rules:
 - All commits run through cargo check + cargo test before landing
 - Use edit_file for surgical changes (old_string must be unique)
 - Use write_file for new files or complete rewrites
-- Keep changes minimal and focused — one logical change per commit";
+- Keep changes minimal and focused — one logical change per commit
+- Path Resolution: If you encounter file-related errors, re-verify the directory structure using `list_directory` or `execute_shell` with `ls` or `find`. Do NOT assume directory structures.";
 
 pub(crate) const REVIEW_INSTRUCTIONS: &str = "\
 You are in REVIEW mode — code review and analysis.
 Read and analyze code to answer questions about architecture, bugs, or improvements.
 You have read-only access — you cannot modify files in this mode.
-Be specific: reference file paths and line numbers when discussing code.";
+Be specific: reference file paths and line numbers when discussing code.
+Do NOT assume directory structures; verify them using `list_directory` if paths seem incorrect.";

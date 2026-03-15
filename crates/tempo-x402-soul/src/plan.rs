@@ -75,7 +75,7 @@ pub enum PlanStep {
         store_as: Option<String>,
     },
     /// Run a shell command.
-    RunShell {
+    ExecuteShell {
         command: String,
         #[serde(default)]
         store_as: Option<String>,
@@ -257,7 +257,7 @@ impl PlanStep {
             PlanStep::ReadFile { store_as, .. }
             | PlanStep::SearchCode { store_as, .. }
             | PlanStep::ListDir { store_as, .. }
-            | PlanStep::RunShell { store_as, .. }
+            | PlanStep::ExecuteShell { store_as, .. }
             | PlanStep::CheckSelf { store_as, .. }
             | PlanStep::CallPaidEndpoint { store_as, .. }
             | PlanStep::CreateScriptEndpoint { store_as, .. }
@@ -350,7 +350,7 @@ impl<'a> PlanExecutor<'a> {
                 self.execute_tool("list_directory", &serde_json::json!({ "path": path }))
                     .await
             }
-            PlanStep::RunShell { command, .. } => {
+            PlanStep::ExecuteShell { command, .. } => {
                 self.execute_tool("execute_shell", &serde_json::json!({ "command": command }))
                     .await
             }
@@ -443,10 +443,7 @@ impl<'a> PlanExecutor<'a> {
 
                 // Step 2: Find the callable_url for the target slug
                 // Strip control characters (ANSI codes, etc.) that may leak from peer responses
-                let clean_json: String = peers_json
-                    .chars()
-                    .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
-                    .collect();
+                let clean_json = crate::world_model::sanitize_json_str(&peers_json);
                 let peers: serde_json::Value = match serde_json::from_str(&clean_json) {
                     Ok(v) => v,
                     Err(e) => {
